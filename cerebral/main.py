@@ -8499,6 +8499,7 @@ def _wire_plugin_seams() -> None:
         ("video", "set_extract_fn", _video_extract),                                 # S5 #642 (ADR-0017)
         ("video", "set_verify_fn", _video_verify),                                   # S6 #644 (ADR-0017)
         ("video", "set_commit_fn", _video_commit),                                    # S7 #645 (ADR-0017)
+        ("video_project", "set_record_turn_fn", _record_turn),                       # VIDEO-EDIT V5 trim card
         ("github_ingest", "set_route_extraction_local_fn", _route_extraction_local),  # ADR-0019 S3 drain
         ("delegate", "set_subagent_context",
          lambda: {"router": _router, "gate_fn": _gate_tool, "execute_fn": _execute_after_gate,

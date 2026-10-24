@@ -2,7 +2,7 @@
 Video project MCP plugin -- ADR-0041, driver VIDEO-EDIT.md.
 
 Tools: video_status (V1), video_project_create (V2), video_render / video_render_status (V3),
-video_quick_trim (V4).
+video_quick_trim (V4), video_find_clips (V5).
 
 V1: find_shotcut() / find_melt() discovery + video_status. Shotcut ships melt.exe
 next to shotcut.exe, so one install is both the editor the user opens and the
@@ -27,8 +27,15 @@ is cut to its loudest audio stretch plus a few seconds either side (Quick trim, 
 only, no model), and the clips are joined in capture order (file mtime). A clip with
 no audio or no clear peak is kept whole and flagged, for V7's Vision trim to escalate.
 
+V5: video_find_clips -- "today's clips" / a folder -> paths in capture order (default
+the Game Bar captures folder, as plugins/game_capture.py). Unless the request already
+said what to do, it posts a chat card (a system_event turn, kind video_trim_offer,
+rendered by tray/lib/video-trim-card.js) offering Quick trim / Vision trim / Something
+else plus a comment box; the click comes back as an ordinary typed message.
+
 Shotcut discovery is injectable via set_find_shotcut_fn for tests; clip probing
-via set_probe_fn; the melt run via set_render_fn; audio levels via set_loudness_fn.
+via set_probe_fn; the melt run via set_render_fn; audio levels via set_loudness_fn;
+the chat card via set_record_turn_fn (main.py's _record_turn).
 Never invoke a real shotcut.exe or melt.exe from within this module at import time or in tests.
 """
 import asyncio
@@ -204,6 +211,42 @@ _loudness_fn = None
 def set_loudness_fn(fn) -> None:
     global _loudness_fn
     _loudness_fn = fn
+
+
+# -- V5: pointing at clips + the chat card ---------------------------------------
+
+def default_clips_dir() -> Path:
+    """Where Game Bar saves clips (plugins/game_capture.py's default)."""
+    return Path.home() / "Videos" / "Captures"
+
+
+def parse_day(text: str, today: date) -> "date | None":
+    """'today' / 'yesterday' / 'YYYY-MM-DD' -> that date; 'all' -> None (no filter)."""
+    t = (text or "today").strip().lower()
+    if t == "all":
+        return None
+    if t == "today":
+        return today
+    if t == "yesterday":
+        return date.fromordinal(today.toordinal() - 1)
+    return date.fromisoformat(t)
+
+
+def clips_in(folder: Path, day: "date | None") -> list[Path]:
+    """Video files directly in folder, captured on day (all days when None), in capture order."""
+    clips = [p for p in folder.iterdir()
+             if p.is_file() and p.suffix.lower() in _VIDEO_EXTS
+             and (day is None or datetime.fromtimestamp(p.stat().st_mtime).date() == day)]
+    return sorted(clips, key=lambda p: p.stat().st_mtime)
+
+
+# Injectable seam: async callable(kind: str, content: dict) -> None (main.py's _record_turn).
+_record_turn_fn = None
+
+
+def set_record_turn_fn(fn) -> None:
+    global _record_turn_fn
+    _record_turn_fn = fn
 
 
 def capture_date(paths: list[Path]) -> date:
@@ -409,6 +452,27 @@ class VideoProjectPlugin:
                     "required": ["paths"],
                 },
             ),
+            Tool(
+                name="video_find_clips",
+                description=(
+                    "Find video clips the user points at: the clips in a folder (default "
+                    "their Game Bar captures, Videos\\Captures) captured on a day ('today' "
+                    "by default, 'yesterday', YYYY-MM-DD, or 'all'), in capture order. With "
+                    "ask=true (default) it also shows a card in the chat to choose Quick "
+                    "trim, Vision trim or something else, plus a comment box; their choice "
+                    "comes back as a message. Set ask=false when the request already says "
+                    "what to do (e.g. 'quick trim today's clips'), then act on the paths."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "folder": {"type": "string", "description": "Folder to look in (default Videos\\Captures)"},
+                        "day": {"type": "string", "description": "today (default), yesterday, YYYY-MM-DD or all"},
+                        "ask": {"type": "boolean", "description": "Show the choice card (default true)"},
+                    },
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -422,6 +486,8 @@ class VideoProjectPlugin:
             return self._render_status(args or {})
         if tool_name == "video_quick_trim":
             return await self._quick_trim(args or {})
+        if tool_name == "video_find_clips":
+            return await self._find_clips(args or {})
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _status(self) -> ToolResult:
@@ -529,6 +595,28 @@ class VideoProjectPlugin:
         out = json.loads(tr.content)
         out.update(trims=trims, flagged=flagged)
         return ToolResult(content=json.dumps(out))
+
+    async def _find_clips(self, args: dict) -> ToolResult:
+        folder = Path(str(args.get("folder") or default_clips_dir())).expanduser()
+        if not folder.is_dir():
+            return ToolResult(content=f"not a folder: {folder}", is_error=True)
+        try:
+            day = parse_day(str(args.get("day") or "today"), date.today())
+        except ValueError:
+            return ToolResult(content="day must be today, yesterday, YYYY-MM-DD or all", is_error=True)
+        paths = [str(p) for p in clips_in(folder, day)]
+        label = "all days" if day is None else f"{day:%Y-%m-%d}"
+        asked = False
+        if paths and args.get("ask", True) and _record_turn_fn is not None:
+            await _record_turn_fn("system_event", {
+                "kind": "video_trim_offer",
+                "summary": f"{len(paths)} clip(s) from {folder.name}, {label}",
+                "folder": str(folder), "day": label, "paths": paths,
+            })
+            asked = True
+        return ToolResult(content=json.dumps({
+            "folder": str(folder), "day": label, "count": len(paths), "paths": paths, "asked": asked,
+        }))
 
     def _project(self, args: dict) -> "tuple[dict | None, str | None]":
         """(doc, error) for a video project doc_id in the active profile's library."""

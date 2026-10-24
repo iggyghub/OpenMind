@@ -1237,7 +1237,7 @@
 
     /* #810 -- self-dev pending-review card. Lives inside a .turn.system
        wrapper but needs its own non-italic, left-aligned, bordered box. */
-    .self-dev-card {
+    .self-dev-card, .video-trim-card {
       align-self: center;
       max-width: 78%;
       font-style: normal;
@@ -1263,6 +1263,21 @@
     }
     .self-dev-card-btn:disabled { opacity: 0.6; cursor: default; }
     .self-dev-card-status { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
+    /* VIDEO-EDIT V5 -- video trim card: shares the self-dev card's box. */
+    .video-trim-card-title { font-weight: 600; margin-bottom: 6px; }
+    .video-trim-card-row { margin: 2px 0; word-break: break-all; color: var(--text-muted); }
+    .video-trim-card-comment {
+      display: block; width: 100%; box-sizing: border-box; margin-top: 8px; resize: vertical;
+      background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: 6px 8px; font: inherit;
+    }
+    .video-trim-card-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .video-trim-card-btns button {
+      padding: 6px 14px; border-radius: var(--radius-md); border: 1px solid var(--border);
+      background: var(--accent, #4a7cff); color: #fff; font-size: 13px; cursor: pointer;
+    }
+    .video-trim-card-btns button:disabled { opacity: 0.6; cursor: default; }
+    .video-trim-card-status { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
 
     .turn-meta {
       display: block;
@@ -6916,6 +6931,9 @@
        self_dev_pr_pending system_event as an "Approve & Merge" card.
        Dual-mode: window.SelfDevCard here, module.exports for Node tests. -->
   <script src="../lib/self-dev-card.js"></script>
+  <!-- Video trim card (VIDEO-EDIT V5, ADR-0041 decision 6) -- renders a
+       video_trim_offer system_event; a click sends a user_text_command. -->
+  <script src="../lib/video-trim-card.js"></script>
   <!-- WebSocket bridge (UI2 A5 -- #485) -- shared with detached-panel.html.
        Dual-mode: window.WsBridge here, module.exports for Node tests. -->
   <script src="../lib/ws-bridge.js"></script>
@@ -8060,6 +8078,17 @@
             sendEvent(window.SelfDevCard.buildStateMessage(prUrl));
           }
         }
+        return;
+      }
+
+      // VIDEO-EDIT V5 -- "which trim?" card after Felix finds the clips.
+      if (turn.kind === 'system_event' && turn.content && turn.content.kind === 'video_trim_offer'
+          && window.VideoTrimCard) {
+        const cardWrap = document.createElement('div');
+        cardWrap.className = 'turn system';
+        cardWrap.innerHTML = window.VideoTrimCard.renderCardHtml(turn);
+        transcript.appendChild(cardWrap);
+        window.VideoTrimCard.attachClickHandler(cardWrap.querySelector('.video-trim-card'), sendEvent);
         return;
       }
 
