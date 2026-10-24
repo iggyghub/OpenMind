@@ -1,4 +1,4 @@
-"""Tests for plugins/video_project.py -- ADR-0041, VIDEO-EDIT V1-V4.
+"""Tests for plugins/video_project.py -- ADR-0041, VIDEO-EDIT V1-V5.
 
 Also the ADR-0034 gate file: the plugin is refused at boot unless this exact name exists.
 """
@@ -388,3 +388,83 @@ async def test_quick_trim_without_shotcut_gives_the_install_hint(tmp_path, libra
     clip = _at(tmp_path, "a.mp4", 20)
     tr = await create().call_tool("video_quick_trim", {"paths": [clip]})
     assert tr.is_error and "setup-shotcut.ps1" in tr.content
+
+
+# ---------------------------------------------------------------------------
+# V5: video_find_clips + the chat card
+# ---------------------------------------------------------------------------
+
+from datetime import date, timedelta
+
+
+@pytest.fixture
+def card():
+    """Captures the system_event turns the plugin posts."""
+    turns = []
+
+    async def _record(kind, content):
+        turns.append((kind, content))
+
+    vp.set_record_turn_fn(_record)
+    yield turns
+    vp.set_record_turn_fn(None)
+
+
+def _clip_on(folder, name, day, hour=20):
+    p = folder / name
+    p.write_bytes(b"")
+    ts = datetime(day.year, day.month, day.day, hour).timestamp()
+    os.utime(p, (ts, ts))
+    return str(p)
+
+
+def test_parse_day():
+    today = date(2026, 10, 23)
+    assert vp.parse_day("today", today) == today
+    assert vp.parse_day(" Yesterday ", today) == date(2026, 10, 22)
+    assert vp.parse_day("2026-10-01", today) == date(2026, 10, 1)
+    assert vp.parse_day("all", today) is None
+    with pytest.raises(ValueError):
+        vp.parse_day("last week", today)
+
+
+async def test_find_clips_lists_todays_videos_in_capture_order_and_offers_the_card(tmp_path, card):
+    today = date.today()
+    late = _clip_on(tmp_path, "late.mp4", today, 21)
+    early = _clip_on(tmp_path, "early.MKV", today, 9)
+    _clip_on(tmp_path, "old.mp4", today - timedelta(days=3))
+    _clip_on(tmp_path, "shot.png", today)
+    out = json.loads((await create().call_tool("video_find_clips", {"folder": str(tmp_path)})).content)
+    assert out["paths"] == [early, late] and out["count"] == 2 and out["asked"] is True
+    assert out["day"] == f"{today:%Y-%m-%d}"
+    [(kind, content)] = card
+    assert kind == "system_event" and content["kind"] == "video_trim_offer"
+    assert content["paths"] == [early, late] and content["summary"].startswith("2 clip(s) from ")
+
+
+async def test_find_clips_skips_the_card_when_told_what_to_do(tmp_path, card):
+    _clip_on(tmp_path, "a.mp4", date.today())
+    out = json.loads((await create().call_tool("video_find_clips", {"folder": str(tmp_path), "ask": False})).content)
+    assert out["count"] == 1 and out["asked"] is False and card == []
+
+
+async def test_find_clips_all_days_and_no_card_when_empty(tmp_path, card):
+    _clip_on(tmp_path, "old.mp4", date(2026, 1, 2))
+    out = json.loads((await create().call_tool("video_find_clips", {"folder": str(tmp_path), "day": "all"})).content)
+    assert out["count"] == 1 and out["day"] == "all days"
+    card.clear()
+    out = json.loads((await create().call_tool("video_find_clips", {"folder": str(tmp_path)})).content)
+    assert out["count"] == 0 and out["asked"] is False and card == []
+
+
+async def test_find_clips_defaults_to_the_game_bar_folder(tmp_path, monkeypatch, card):
+    monkeypatch.setattr(vp.Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / "Videos" / "Captures").mkdir(parents=True)
+    out = json.loads((await create().call_tool("video_find_clips", {})).content)
+    assert out["folder"] == str(tmp_path / "Videos" / "Captures")
+
+
+async def test_find_clips_rejects_bad_folder_and_day(tmp_path):
+    assert (await create().call_tool("video_find_clips", {"folder": str(tmp_path / "nope")})).is_error
+    tr = await create().call_tool("video_find_clips", {"folder": str(tmp_path), "day": "soon"})
+    assert tr.is_error and "YYYY-MM-DD" in tr.content
