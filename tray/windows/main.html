@@ -9240,7 +9240,7 @@
 
       if (openBtn) {
         var id = parseInt(openBtn.dataset.docId, 10);
-        sendEvent(_docsPanel.actionFor({ id: id }, 'open'));
+        sendEvent(_docsPanel.actionFor({ id: id, kind: openBtn.dataset.kind }, 'open'));
       } else if (exportBtn) {
         var eId  = parseInt(exportBtn.dataset.docId, 10);
         var sel  = docsListEl.querySelector('.docs-fmt-sel[data-doc-id="' + eId + '"]');

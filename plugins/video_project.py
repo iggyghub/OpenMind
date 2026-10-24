@@ -2,7 +2,7 @@
 Video project MCP plugin -- ADR-0041, driver VIDEO-EDIT.md.
 
 Tools: video_status (V1), video_project_create (V2), video_render / video_render_status (V3),
-video_quick_trim (V4), video_find_clips (V5).
+video_quick_trim (V4), video_find_clips (V5), video_open / video_project_edit (V6).
 
 V1: find_shotcut() / find_melt() discovery + video_status. Shotcut ships melt.exe
 next to shotcut.exe, so one install is both the editor the user opens and the
@@ -33,14 +33,24 @@ said what to do, it posts a chat card (a system_event turn, kind video_trim_offe
 rendered by tray/lib/video-trim-card.js) offering Quick trim / Vision trim / Something
 else plus a comment box; the click comes back as an ordinary typed message.
 
+V6: video_open starts Shotcut on a project (detached, os.startfile -- the plugin may
+not use subprocess, and Popen-detached PowerShell is a known no-op here). The
+fingerprint rule (ADR-0041 decision 8): video_project_edit rewrites a project's
+timeline in place only while its .mlt still matches the fingerprint Felix wrote;
+the old .mlt is snapshotted first (DocumentStore._snapshot: the original forever
+plus the 5 most recent). Once the user has changed it in Shotcut, the edit lands
+as a new project beside it instead, never over it.
+
 Shotcut discovery is injectable via set_find_shotcut_fn for tests; clip probing
 via set_probe_fn; the melt run via set_render_fn; audio levels via set_loudness_fn;
-the chat card via set_record_turn_fn (main.py's _record_turn).
+the chat card via set_record_turn_fn (main.py's _record_turn); the Shotcut
+launch via set_launch_fn.
 Never invoke a real shotcut.exe or melt.exe from within this module at import time or in tests.
 """
 import asyncio
 import hashlib
 import json
+import os
 import re
 import shutil
 from datetime import date, datetime
@@ -247,6 +257,30 @@ _record_turn_fn = None
 def set_record_turn_fn(fn) -> None:
     global _record_turn_fn
     _record_turn_fn = fn
+
+
+# -- V6: open in Shotcut + the fingerprint rule ----------------------------------
+
+def matches_fingerprint(mlt_path: Path) -> bool:
+    """True while the .mlt is exactly what Felix last wrote (its <name>.mlt.sha256)."""
+    fp = Path(str(mlt_path) + ".sha256")
+    return fp.is_file() and fp.read_text(encoding="utf-8").strip() == fingerprint(
+        mlt_path.read_text(encoding="utf-8"))
+
+
+def launch_shotcut(shotcut: Path, mlt_path: Path) -> None:
+    """Start Shotcut on the project via ShellExecute, detached from Cerebral (as
+    discord_send launches Discord). Windows paths cannot contain a double quote."""
+    os.startfile(str(shotcut), arguments=f'"{mlt_path}"')  # type: ignore[call-arg]
+
+
+# Injectable seam: callable(shotcut: Path, mlt_path: Path) -> None.
+_launch_fn = None
+
+
+def set_launch_fn(fn) -> None:
+    global _launch_fn
+    _launch_fn = fn
 
 
 def capture_date(paths: list[Path]) -> date:
@@ -473,6 +507,52 @@ class VideoProjectPlugin:
                     },
                 },
             ),
+            Tool(
+                name="video_open",
+                description=(
+                    "Open a video project in Shotcut, the video editor, so the user can fix "
+                    "cuts or add transitions, titles and music on the timeline. Use this, not "
+                    "doc_open, for a reel (the user can also click Open in Shotcut on it in "
+                    "Library > Documents)."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {"doc_id": {"type": "integer", "description": "The project's document id"}},
+                    "required": ["doc_id"],
+                },
+            ),
+            Tool(
+                name="video_project_edit",
+                description=(
+                    "Change a video project's cuts: replaces its timeline with a new edit list "
+                    "(same shape as video_project_create). Edits in place while the project is "
+                    "exactly as Felix wrote it (the old timeline is kept as a version). If the "
+                    "user has changed it in Shotcut, the change is saved as a new project "
+                    "beside it instead (edited_in_place=false), so their work is never "
+                    "overwritten. Does not render."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "doc_id": {"type": "integer", "description": "The project's document id"},
+                        "clips": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string", "description": "Full path to the video file"},
+                                    "start": {"type": "number", "description": "Seconds from the clip's start"},
+                                    "end": {"type": "number", "description": "Seconds from the clip's start"},
+                                },
+                                "required": ["path", "start", "end"],
+                            },
+                        },
+                    },
+                    "required": ["doc_id", "clips"],
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -488,6 +568,10 @@ class VideoProjectPlugin:
             return await self._quick_trim(args or {})
         if tool_name == "video_find_clips":
             return await self._find_clips(args or {})
+        if tool_name == "video_open":
+            return await self._open(args or {})
+        if tool_name == "video_project_edit":
+            return await self._edit(args or {})
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
 
     def _status(self) -> ToolResult:
@@ -509,30 +593,9 @@ class VideoProjectPlugin:
         if store is None or pid is None:
             return ToolResult(content="Document library not ready (no active profile)", is_error=True)
 
-        raw = args.get("clips") or []
-        cuts: list[Cut] = []
-        paths: list[Path] = []
-        for i, c in enumerate(raw):
-            try:
-                path = Path(str(c["path"])).resolve()
-                cut = Cut(str(path), float(c["start"]), float(c["end"]))
-            except (KeyError, TypeError, ValueError):
-                return ToolResult(content=f"clip {i}: needs path, start and end", is_error=True)
-            if path.suffix.lower() not in _VIDEO_EXTS or not path.is_file():
-                return ToolResult(content=f"clip {i}: not a video file: {path}", is_error=True)
-            cuts.append(cut)
-            paths.append(path)
-        if not cuts:
-            return ToolResult(content="clips is empty", is_error=True)
-
-        probe = self._tool(_probe_fn, find_ffprobe, probe_clip)
-        if probe is None:
-            return ToolResult(content=_INSTALL_MSG, is_error=True)
-        try:
-            infos = {str(p): await probe(p) for p in dict.fromkeys(paths)}
-            xml = build_mlt(cuts, infos)
-        except (ValueError, OSError) as exc:
-            return ToolResult(content=str(exc), is_error=True)
+        xml, cuts, paths, err = await self._build(args.get("clips"))
+        if err:
+            return ToolResult(content=err, is_error=True)
 
         day = capture_date(paths)
         folder = project_folder(day)
@@ -549,6 +612,81 @@ class VideoProjectPlugin:
         return ToolResult(content=json.dumps({
             "doc_id": doc["id"], "name": name, "folder": folder, "path": doc["path"],
             "clips": len(cuts), "duration_s": round(duration, 3), "fingerprint": fp,
+        }))
+
+    async def _build(self, raw) -> "tuple[str | None, list, list, str | None]":
+        """Validate and probe an edit list, then serialise it: (xml, cuts, paths, error)."""
+        cuts: list[Cut] = []
+        paths: list[Path] = []
+        for i, c in enumerate(raw or []):
+            try:
+                path = Path(str(c["path"])).resolve()
+                cut = Cut(str(path), float(c["start"]), float(c["end"]))
+            except (KeyError, TypeError, ValueError):
+                return None, [], [], f"clip {i}: needs path, start and end"
+            if path.suffix.lower() not in _VIDEO_EXTS or not path.is_file():
+                return None, [], [], f"clip {i}: not a video file: {path}"
+            cuts.append(cut)
+            paths.append(path)
+        if not cuts:
+            return None, [], [], "clips is empty"
+
+        probe = self._tool(_probe_fn, find_ffprobe, probe_clip)
+        if probe is None:
+            return None, [], [], _INSTALL_MSG
+        try:
+            infos = {str(p): await probe(p) for p in dict.fromkeys(paths)}
+            return build_mlt(cuts, infos), cuts, paths, None
+        except (ValueError, OSError) as exc:
+            return None, [], [], str(exc)
+
+    async def _open(self, args: dict) -> ToolResult:
+        doc, err = self._project(args)
+        if err:
+            return ToolResult(content=err, is_error=True)
+        finder = _find_shotcut_fn if _find_shotcut_fn is not None else find_shotcut
+        shotcut = finder()
+        if shotcut is None:
+            return ToolResult(content=_INSTALL_MSG, is_error=True)
+        mlt_path = Path(doc["path"])
+        _shared.get("documents.store")._ensure_v0(mlt_path)  # Felix's original survives Shotcut's saves
+        try:
+            (_launch_fn or launch_shotcut)(shotcut, mlt_path)
+        except OSError as exc:
+            return ToolResult(content=f"could not start Shotcut: {exc}", is_error=True)
+        return ToolResult(content=json.dumps({"doc_id": doc["id"], "opened": str(mlt_path)}))
+
+    async def _edit(self, args: dict) -> ToolResult:
+        doc, err = self._project(args)
+        if err:
+            return ToolResult(content=err, is_error=True)
+        mlt_path = Path(doc["path"])
+        if not matches_fingerprint(mlt_path):
+            # The user changed it in Shotcut: never overwrite, fork a new project beside it.
+            tr = await self._create({"clips": args.get("clips"), "name": doc["name"]})
+            if tr.is_error:
+                return tr
+            out = json.loads(tr.content)
+            out.update(edited_in_place=False, forked_from=doc["id"],
+                       reason="the timeline was changed in Shotcut since Felix wrote it")
+            return ToolResult(content=json.dumps(out))
+
+        xml, cuts, _paths, err = await self._build(args.get("clips"))
+        if err:
+            return ToolResult(content=err, is_error=True)
+        store = _shared.get("documents.store")
+        store._snapshot(mlt_path)
+        mlt_path.write_text(xml, encoding="utf-8")
+        fp = fingerprint(xml)
+        Path(str(mlt_path) + ".sha256").write_text(fp, encoding="utf-8")
+        store.touch_doc(doc["id"])
+        broadcast = _shared.get("documents.broadcast_fn")
+        if broadcast:
+            await broadcast()
+        return ToolResult(content=json.dumps({
+            "doc_id": doc["id"], "name": doc["name"], "path": str(mlt_path), "edited_in_place": True,
+            "clips": len(cuts), "duration_s": round(sum(c.end - c.start for c in cuts), 3),
+            "fingerprint": fp, "versions": store.list_versions(doc["id"]),
         }))
 
     def _tool(self, seam, find, run):

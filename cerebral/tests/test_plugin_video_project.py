@@ -1,4 +1,4 @@
-"""Tests for plugins/video_project.py -- ADR-0041, VIDEO-EDIT V1-V5.
+"""Tests for plugins/video_project.py -- ADR-0041, VIDEO-EDIT V1-V6.
 
 Also the ADR-0034 gate file: the plugin is refused at boot unless this exact name exists.
 """
@@ -468,3 +468,91 @@ async def test_find_clips_rejects_bad_folder_and_day(tmp_path):
     assert (await create().call_tool("video_find_clips", {"folder": str(tmp_path / "nope")})).is_error
     tr = await create().call_tool("video_find_clips", {"folder": str(tmp_path), "day": "soon"})
     assert tr.is_error and "YYYY-MM-DD" in tr.content
+
+
+# ---------------------------------------------------------------------------
+# V6: open in Shotcut + the fingerprint rule
+# ---------------------------------------------------------------------------
+
+async def _edit(doc_id, clips):
+    tr = await create().call_tool("video_project_edit", {"doc_id": doc_id, "clips": clips})
+    assert not tr.is_error, tr.content
+    return json.loads(tr.content)
+
+
+async def test_open_launches_shotcut_on_the_project_and_keeps_the_original(tmp_path, library):
+    launched = []
+    vp.set_launch_fn(lambda shotcut, mlt: launched.append((shotcut, mlt)))
+    vp.set_find_shotcut_fn(lambda: tmp_path / "shotcut.exe")
+    try:
+        proj = await _make_project(tmp_path)
+        tr = await create().call_tool("video_open", {"doc_id": proj["doc_id"]})
+        assert not tr.is_error, tr.content
+        assert launched == [(tmp_path / "shotcut.exe", Path(proj["path"]))]
+        assert library.list_versions(proj["doc_id"]) == ["v0_Reel 2026-10-23.mlt"]
+    finally:
+        vp.set_launch_fn(None)
+
+
+async def test_open_without_shotcut_or_for_a_non_project(tmp_path, library):
+    vp.set_launch_fn(lambda *_: pytest.fail("must not launch"))
+    try:
+        vp.set_find_shotcut_fn(lambda: None)
+        proj = await _make_project(tmp_path)
+        tr = await create().call_tool("video_open", {"doc_id": proj["doc_id"]})
+        assert tr.is_error and "setup-shotcut.ps1" in tr.content
+        note = library.save_text(1, "", "note", "hi")
+        assert (await create().call_tool("video_open", {"doc_id": note["id"]})).is_error
+    finally:
+        vp.set_launch_fn(None)
+
+
+async def test_edit_in_place_while_the_fingerprint_matches(tmp_path, library):
+    proj = await _make_project(tmp_path)
+    a = _clip(tmp_path, "a.mp4", (2026, 10, 23))
+    out = await _edit(proj["doc_id"], [{"path": a, "start": 2, "end": 9}])
+    assert out["edited_in_place"] is True and out["doc_id"] == proj["doc_id"] and out["duration_s"] == 7.0
+    assert vp.matches_fingerprint(Path(proj["path"]))
+    assert out["fingerprint"] != proj["fingerprint"]
+    out = await _edit(proj["doc_id"], [{"path": a, "start": 1, "end": 5}])
+    versions = library.list_versions(proj["doc_id"])
+    assert versions[-1] == "v0_Reel 2026-10-23.mlt" and len(versions) == 2  # original + one snapshot
+    assert len([d for d in library.list_docs(1) if d["kind"] == "mlt"]) == 1
+
+
+async def test_edit_after_the_user_changed_it_forks_a_new_project(tmp_path, library):
+    proj = await _make_project(tmp_path)
+    mlt = Path(proj["path"])
+    users = mlt.read_text(encoding="utf-8") + "<!-- user's title, added in Shotcut -->\n"
+    mlt.write_text(users, encoding="utf-8")
+    a = _clip(tmp_path, "a.mp4", (2026, 10, 23))
+    out = await _edit(proj["doc_id"], [{"path": a, "start": 2, "end": 9}])
+    assert out["edited_in_place"] is False and out["forked_from"] == proj["doc_id"]
+    assert out["doc_id"] != proj["doc_id"] and out["name"] == "Reel 2026-10-23 (2)"
+    assert mlt.read_text(encoding="utf-8") == users  # never overwritten
+    assert library.list_versions(proj["doc_id"]) == []
+
+
+async def test_edit_reports_bad_clips_without_touching_the_project(tmp_path, library):
+    proj = await _make_project(tmp_path)
+    before = Path(proj["path"]).read_text(encoding="utf-8")
+    tr = await create().call_tool("video_project_edit", {"doc_id": proj["doc_id"], "clips": []})
+    assert tr.is_error and "empty" in tr.content
+    assert Path(proj["path"]).read_text(encoding="utf-8") == before
+
+
+def test_launch_shotcut_quotes_the_project_path(monkeypatch):
+    seen = []
+    monkeypatch.setattr(vp.os, "startfile", lambda f, arguments="": seen.append((f, arguments)), raising=False)
+    vp.launch_shotcut(Path("C:/S/shotcut.exe"), Path("C:/lib/Reel 2026-10-23.mlt"))
+    assert seen == [(str(Path("C:/S/shotcut.exe")), f'"{Path("C:/lib/Reel 2026-10-23.mlt")}"')]
+
+
+async def test_doc_open_sends_video_projects_to_video_open(tmp_path, library, monkeypatch):
+    import plugins.documents as docs
+    monkeypatch.setattr(docs, "_store", library)
+    monkeypatch.setattr(docs, "_active_profile_id", 1)
+    monkeypatch.setattr(docs, "_launcher_fn", lambda _p: pytest.fail("must not launch LibreOffice"))
+    proj = await _make_project(tmp_path)
+    tr = await docs.create().call_tool("doc_open", {"doc_id": proj["doc_id"]})
+    assert tr.is_error and "video_open" in tr.content
