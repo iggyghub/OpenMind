@@ -6947,8 +6947,9 @@
     window.MarkKit.init(document, {
       context: function (el) {
         var pane = el.closest('[data-route]');
-        var tabs = pane ? Array.prototype.map.call(pane.querySelectorAll('.tab-strip .is-active'),
-          function (t) { return t.textContent.trim(); }) : [];
+        var tabs = pane ? Array.prototype.filter.call(pane.querySelectorAll('.tab-strip .is-active'),
+          function (t) { return t.offsetParent !== null; })  // hidden sub-panes keep their own active tab
+          .map(function (t) { return t.textContent.trim(); }) : [];
         return { route: pane ? pane.getAttribute('data-route') : '', subtab: tabs.join(' > ') };
       },
     });
