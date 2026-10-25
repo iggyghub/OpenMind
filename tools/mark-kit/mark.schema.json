@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mark-kit/mark.schema.json",
+  "title": "Mark",
+  "description": "DRAFT (M1). One UI change request made by pointing at a live app. Later slices add type, scope, screenshot, status.",
+  "type": "object",
+  "required": ["note", "selector"],
+  "properties": {
+    "note": { "type": "string", "description": "What should change, in the user's words." },
+    "created": { "type": "string", "format": "date-time" },
+    "locator": {
+      "type": "object",
+      "description": "Short stable locator. Resolve: querySelectorAll(sel) under anchor (or the document), keep matches whose text starts the same, then take index nth if still ambiguous.",
+      "required": ["sel"],
+      "properties": {
+        "anchor": { "type": "string", "description": "#id of the nearest ancestor with an id; empty = document." },
+        "sel": { "type": "string", "description": "tag.class (state classes is-* dropped), or #id when the element has one." },
+        "text": { "type": "string", "maxLength": 40 },
+        "role": { "type": "string" },
+        "nth": { "type": "integer", "minimum": 0, "description": "Index among text-filtered matches; only present when needed." }
+      }
+    },
+    "selector": { "type": "string", "description": "Full CSS path (fallback when the locator no longer resolves)." },
+    "text": { "type": "string", "maxLength": 80, "description": "Element text, whitespace collapsed." },
+    "styles": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Non-default computed styles that usually matter." },
+    "url": { "type": "string", "description": "Page URL without the query string." },
+    "viewport": { "type": "object", "properties": { "w": { "type": "integer" }, "h": { "type": "integer" } } },
+    "scroll": { "type": "object", "properties": { "x": { "type": "integer" }, "y": { "type": "integer" } } },
+    "errors": { "type": "array", "items": { "type": "string" }, "description": "Console errors since the previous mark." },
+    "app": { "type": "object", "description": "Host-defined context (Felix: route, subtab)." },
+    "commit": { "type": "string", "description": "Git commit of the marked app; stamped by the store, not the page." }
+  }
+}

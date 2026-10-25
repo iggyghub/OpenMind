@@ -4,8 +4,28 @@
     {
       "name": "tray-static-preview",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8834", "--directory", "tray"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8834",
+        "--directory",
+        "tray"
+      ],
       "port": 8834
+    },
+    {
+      "name": "repo-static-preview",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8835",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "."
+      ],
+      "port": 8835
     }
   ]
 }
