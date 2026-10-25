@@ -98,8 +98,8 @@ const DUAL_MODE_LIBS = [
     check: (mod) => expect(typeof mod.create).toBe('function'),
   },
   {
-    file: 'ui-marks.js',
-    global: 'UiMarks',
+    file: '../../tools/mark-kit/mark-kit.js',
+    global: 'MarkKit',
     check: (mod) => expect(typeof mod.init).toBe('function'),
   },
   {
