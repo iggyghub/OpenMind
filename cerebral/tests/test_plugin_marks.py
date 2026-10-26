@@ -109,3 +109,9 @@ async def test_fix_failed_tests_reopens_with_note_and_guards(repo):
     assert "tests failed" in m["history"][-1]["note"]
     res, calls, _ = await _run_fix(repo, red, ids=["zzz"])
     assert res.is_error and calls == []
+
+
+def test_statuses_match_the_schema():
+    from pathlib import Path
+    schema = json.loads((Path(M.__file__).parents[1] / "tools" / "mark-kit" / "mark.schema.json").read_text(encoding="utf-8"))
+    assert tuple(schema["properties"]["status"]["enum"]) == M.STATUSES

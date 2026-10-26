@@ -2,15 +2,66 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "mark-kit/mark.schema.json",
   "title": "Mark",
-  "description": "DRAFT (M1). One UI change request made by pointing at a live app. Later slices add type, scope, screenshot, status.",
+  "description": "One UI change request made by pointing at a live app with mark-kit. Written by the page (mark-kit.js) and completed by a store (id, status, history, commit, shot_path). One JSON object per line in .marks/marks.jsonl.",
   "type": "object",
   "required": ["note", "selector"],
   "properties": {
-    "note": { "type": "string", "description": "What should change, in the user's words." },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$", "description": "Made by the page; a store keeps it (re-adding the same id is a no-op)." },
+    "note": { "type": "string", "description": "What should change, in the user's words. May be empty when type says enough (e.g. remove)." },
+    "type": { "enum": ["fix", "remove", "move", "add", "link", "bug", "idea"], "default": "fix" },
+    "kind": { "enum": ["page", "tab", "section", "control", "field"], "description": "type=add only: what to add." },
+    "scope": { "enum": ["all"], "description": "Absent = this element only. all = every element matching `match`." },
+    "match": { "type": "string", "description": "scope=all: tag.class selector the request applies to (state classes is-* dropped)." },
+    "matched": { "type": "integer", "minimum": 0, "description": "scope=all: how many elements matched when it was marked." },
+    "link": {
+      "type": "object",
+      "description": "type=link: the other element and how the two relate.",
+      "properties": {
+        "relation": { "enum": ["opens", "shows data from", "stays in sync with", "looks like"] },
+        "locator": { "$ref": "#/$defs/locator" },
+        "selector": { "type": "string" },
+        "text": { "type": "string" }
+      }
+    },
+    "locator": { "$ref": "#/$defs/locator" },
+    "selector": { "type": "string", "description": "Full CSS path (fallback when the locator no longer resolves)." },
+    "text": { "type": "string", "maxLength": 80, "description": "Element text, whitespace collapsed. Never contains what was typed into a field." },
+    "styles": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Non-default computed styles that usually matter." },
     "created": { "type": "string", "format": "date-time" },
+    "url": { "type": "string", "description": "Page URL without the query string." },
+    "viewport": { "type": "object", "properties": { "w": { "type": "integer" }, "h": { "type": "integer" } } },
+    "scroll": { "type": "object", "properties": { "x": { "type": "integer" }, "y": { "type": "integer" } } },
+    "errors": { "type": "array", "items": { "type": "string" }, "description": "Console errors since the previous mark." },
+    "app": { "type": "object", "description": "Host-defined context (Felix: route, subtab)." },
+    "sketch": {
+      "type": "array",
+      "description": "Boxes drawn on the screenshot (type=add), in screenshot pixels. Also burned into the image.",
+      "items": { "type": "object", "properties": { "x": { "type": "integer" }, "y": { "type": "integer" }, "w": { "type": "integer" }, "h": { "type": "integer" } } }
+    },
+    "shot": { "type": "string", "description": "In flight only: PNG data URL from the host's capture. A store writes it to shot_path and never keeps it in the line." },
+    "shot_path": { "type": "string", "description": "Repo-relative screenshot, e.g. .marks/shots/<id>.png. Inputs were blacked out." },
+    "status": { "enum": ["open", "fixing", "fixed", "verified", "reopened", "declined"], "description": "Set by the store. Marks are never deleted." },
+    "commit": { "type": "string", "description": "HEAD of the marked app when it was stored." },
+    "pr": { "type": "string", "description": "The fix's pull request." },
+    "fix_commit": { "type": "string", "description": "The commit that fixed it, when a fixer reports one." },
+    "reason": { "type": "string", "description": "status=declined: why the fixer turned it down." },
+    "history": {
+      "type": "array",
+      "description": "Every status change, oldest first. A reopen's `note` says what is still wrong.",
+      "items": {
+        "type": "object",
+        "required": ["status", "at"],
+        "properties": {
+          "status": { "type": "string" }, "at": { "type": "string" },
+          "note": { "type": "string" }, "reason": { "type": "string" }, "pr": { "type": "string" }, "commit": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
     "locator": {
       "type": "object",
-      "description": "Short stable locator. Resolve: querySelectorAll(sel) under anchor (or the document), keep matches whose text starts the same, then take index nth if still ambiguous.",
+      "description": "Short stable locator. Resolve: querySelectorAll(sel) under anchor (or the document), keep matches whose text (first 40 chars) is the same, then take index nth if still ambiguous.",
       "required": ["sel"],
       "properties": {
         "anchor": { "type": "string", "description": "#id of the nearest ancestor with an id; empty = document." },
@@ -19,15 +70,6 @@
         "role": { "type": "string" },
         "nth": { "type": "integer", "minimum": 0, "description": "Index among text-filtered matches; only present when needed." }
       }
-    },
-    "selector": { "type": "string", "description": "Full CSS path (fallback when the locator no longer resolves)." },
-    "text": { "type": "string", "maxLength": 80, "description": "Element text, whitespace collapsed." },
-    "styles": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Non-default computed styles that usually matter." },
-    "url": { "type": "string", "description": "Page URL without the query string." },
-    "viewport": { "type": "object", "properties": { "w": { "type": "integer" }, "h": { "type": "integer" } } },
-    "scroll": { "type": "object", "properties": { "x": { "type": "integer" }, "y": { "type": "integer" } } },
-    "errors": { "type": "array", "items": { "type": "string" }, "description": "Console errors since the previous mark." },
-    "app": { "type": "object", "description": "Host-defined context (Felix: route, subtab)." },
-    "commit": { "type": "string", "description": "Git commit of the marked app; stamped by the store, not the page." }
+    }
   }
 }

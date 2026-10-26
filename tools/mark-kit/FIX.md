@@ -23,3 +23,7 @@ For each mark with `status` `open` or `reopened`:
 
 The person who marked it reviews `fixed` marks in the app and moves them to
 `verified` or back to `reopened`.
+
+Marks in `fixing` are being worked on by another run: leave them alone. Marks in
+`verified` or `declined` are done. If a request is impossible or would break
+something, decline it with the reason rather than half-doing it.
