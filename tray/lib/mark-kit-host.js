@@ -17,6 +17,12 @@
 //   show(mark)    -> review: switch to the mark's route (sub-tab is left as is:
 //                    mark mode swallows clicks, so a tab can't be clicked open).
 //   shotUrl(mark) -> file:// URL of the stored screenshot (the window is file://).
+//   fix           -> "Check the marks": marks_fix (plugins/marks.py) runs self_dev
+//                    on every open mark with the picked model. Models come from
+//                    Cerebral's models_list; first-ever default is the coding
+//                    task model, else the active one. Where = local / remote /
+//                    cloud (ADR-0028 R5 tiers).
+//   setKit(api)   -> the core's { reload }, refreshed on marks_changed.
 //   onEvent(ev)   -> called from main.html's handleEvent for every Cerebral event.
 //
 // Dual-mode: window.MarkKitHost in the renderer, module.exports for jest.
@@ -28,6 +34,7 @@
     var waiting = {};  // capture id -> resolve
     var queues = {};   // tool name -> [resolve], oldest first
     var seq = 0;
+    var models = null, modelWaiters = [], kit = null;
 
     // -> parsed JSON result, or null (offline, refused by the gate, error).
     function call(name, args) {
@@ -73,10 +80,16 @@
       var q = ev.type === 'tool_result' && ev.data && queues[ev.data.name];
       if (q && q.length) {
         var r = null;
-        if (!ev.data.is_error) { try { r = JSON.parse(ev.data.content); } catch (e) {} }
+        if (ev.data.is_error) r = { error: String(ev.data.content || 'error') };
+        else { try { r = JSON.parse(ev.data.content); } catch (e) {} }
         q.shift()(r);
         return;
       }
+      if (ev.type === 'models_list' && ev.data) {
+        models = ev.data;
+        modelWaiters.splice(0).forEach(function (w) { w(); });
+      }
+      if (ev.type === 'marks_changed' && kit) kit.reload();
       if (ev.type === 'mark_capture_result' && ev.data && waiting[ev.data.id]) {
         var resolve = waiting[ev.data.id];
         delete waiting[ev.data.id];
@@ -92,7 +105,30 @@
       return m.shot_abs ? 'file:///' + encodeURI(m.shot_abs.replace(/\\/g, '/')) : null;
     }
 
-    return { context: context, capture: capture, store: store, show: show, shotUrl: shotUrl, onEvent: onEvent };
+    function where(m) { return m.is_cloud ? 'cloud' : m.is_custom ? 'remote' : 'local'; }
+    var fix = {
+      models: function () {
+        function out() {
+          return ((models && models.models) || []).filter(function (m) { return m.enabled !== false; })
+            .map(function (m) { return { id: m.id, label: m.label || m.id, where: where(m) }; });
+        }
+        if (models) return Promise.resolve(out());
+        return new Promise(function (resolve) {
+          modelWaiters.push(function () { resolve(out()); });
+          send({ type: 'list_models' });
+          setTimeout(function () { resolve(out()); }, 3000);
+        });
+      },
+      preferred: function () {
+        return models ? ((models.task_models || {}).coding || models.active || null) : null;
+      },
+      run: function (model) { return call('marks_fix', model ? { model: model } : {}); },
+    };
+
+    return {
+      context: context, capture: capture, store: store, show: show, shotUrl: shotUrl, fix: fix,
+      setKit: function (k) { kit = k; }, onEvent: onEvent,
+    };
   }
 
   var _exports = { create: create };

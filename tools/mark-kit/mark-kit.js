@@ -24,6 +24,10 @@
 // { reload } so a host can refresh the bar when its store changes.
 //   show(mark)    -> optional: bring the mark's place into view (e.g. switch route)
 //   shotUrl(mark) -> optional: URL of a stored mark's screenshot
+//   fix: { models() -> Promise<[{id, label, where}]>, preferred() -> id | null,
+//          run(modelId) -> Promise<{error?}> }
+//                 -> optional: the split "Check the marks" button. Click = run with
+//                    the remembered model; the arrow picks another (and remembers it).
 // With a store the bar also reviews fixes: "3 fixed - review" jumps to each
 // fixed mark (green outline, the screenshot from when it was marked beside it)
 // with Looks good (-> verified) / Reopen (-> reopened, with a note).
@@ -35,6 +39,7 @@
 (function () {
   var KEY = 'ui-marks';
   var POS_KEY = 'mark-kit-pos';
+  var MODEL_KEY = 'mark-kit-model';
   var STYLE_PROPS = ['font-size', 'font-weight', 'line-height', 'color', 'background-color',
     'padding', 'margin', 'gap', 'border-radius', 'width', 'height'];
   var TYPES = ['fix', 'remove', 'move', 'add', 'link', 'bug', 'idea'];
@@ -260,6 +265,9 @@
       '#uim-review{align-items:flex-start}' +
       '#uim-before{max-height:120px;max-width:260px;border:1px solid #444;border-radius:4px}' +
       '#uim-rv-text{max-width:360px;line-height:1.4}' +
+      '#uim-fix{display:inline-flex}#uim-fix button:first-child{border-radius:6px 0 0 6px}' +
+      '#uim-fix button+button{border-radius:0 6px 6px 0;border-left:0;padding:2px 5px}' +
+      '#uim-models{flex-direction:column;align-items:stretch}#uim-models button{text-align:left}' +
       '#uim-thumb{height:36px;border:1px solid #444;border-radius:4px;cursor:zoom-in}' +
       '#uim-sketch{position:fixed;inset:5vh 5vw;z-index:2147483647;background:#000c;display:flex;flex-direction:column;gap:6px;' +
       'align-items:center;justify-content:center;padding:10px;border-radius:10px}' +
@@ -272,7 +280,11 @@
     // Electron has no window.prompt(), so everything is picked/typed in the bar itself.
     bar.innerHTML =
       '<div class="uim-row"><span id="uim-grip" title="Drag to move">&#x2630; Mark mode: <b id="uim-n">0</b></span>' +
+      '<span id="uim-fix" hidden><button id="uim-fix-go">Check the marks</button>' +
+      '<button id="uim-fix-pick" title="Pick the model that fixes them">&#x25BE;</button></span>' +
       '<button id="uim-copy">Copy all</button><button id="uim-clear">Clear</button><button id="uim-off">Done</button></div>' +
+      '<div class="uim-row" id="uim-models" hidden></div>' +
+      '<div class="uim-row" id="uim-fix-msg" hidden></div>' +
       '<div class="uim-row" id="uim-stats" hidden></div>' +
       '<div class="uim-row" id="uim-review" hidden><img id="uim-before" alt="when it was marked" hidden>' +
       '<div class="uim-row" style="flex-direction:column;align-items:flex-start"><div id="uim-rv-text"></div>' +
@@ -301,6 +313,7 @@
     function n(status) { return marks.filter(function (m) { return m.status === status; }).length; }
     function refresh() {
       count.textContent = marks.filter(actionable).length;
+      $('uim-fix-go').disabled = !marks.some(actionable);
       var fixing = n('fixing'), fixed = n('fixed'), declined = n('declined');
       stats.hidden = !(fixing || fixed || declined);
       stats.innerHTML = (fixing ? '<span>' + fixing + ' being fixed</span>' : '') +
@@ -358,6 +371,42 @@
     });
     $('uim-rv-next').addEventListener('click', function () { rvAt = (rvAt + 1) % (rvList.length || 1); reviewShow(); });
     $('uim-rv-close').addEventListener('click', reviewEnd);
+
+    // Check the marks: hand every open mark to the host's fixer.
+    var fixer = opts.fix, modelsBox = $('uim-models'), fixMsg = $('uim-fix-msg');
+    if (fixer) $('uim-fix').hidden = false;
+    function remembered() { try { return localStorage.getItem(MODEL_KEY); } catch (e) { return null; } }
+    function say(text) { fixMsg.textContent = text || ''; fixMsg.hidden = !text; }
+    function runFix(model) {
+      commit();
+      modelsBox.hidden = true;
+      if (!marks.some(actionable)) return say('No open marks to fix.');
+      say('Starting the fix' + (model ? ' with ' + model : '') + '...');
+      Promise.resolve(fixer.run(model)).then(function (r) {
+        if (!r || r.error) return say('Could not start: ' + ((r && r.error) || 'no answer'));
+        say('Fixing ' + r.marks + ' mark' + (r.marks === 1 ? '' : 's') + '. They turn green to review when done.');
+        reload();
+      }, function () { say('Could not start the fix.'); });
+    }
+    $('uim-fix-go').addEventListener('click', function () { runFix(remembered() || fixer.preferred() || ''); });
+    $('uim-fix-pick').addEventListener('click', function () {
+      if (!modelsBox.hidden) { modelsBox.hidden = true; return; }
+      Promise.resolve(fixer.models()).then(function (list) {
+        var cur = remembered() || fixer.preferred();
+        modelsBox.innerHTML = '';
+        (list || []).forEach(function (m) {
+          var b = doc.createElement('button');
+          b.textContent = (m.id === cur ? '\u2713 ' : '') + m.label + ' (' + m.where + ')';
+          b.addEventListener('click', function () {
+            try { localStorage.setItem(MODEL_KEY, m.id); } catch (e) {}
+            runFix(m.id);
+          });
+          modelsBox.appendChild(b);
+        });
+        if (!modelsBox.children.length) modelsBox.textContent = 'No models listed yet.';
+        modelsBox.hidden = false;
+      });
+    });
     if (store) $('uim-clear').hidden = true;  // the store keeps every mark; nothing is deleted
 
     // Push buffered marks to the store; merge what it confirms back in by id.
