@@ -22,6 +22,11 @@
 // With a store, marks are written there (localStorage only buffers the ones not
 // stored yet) and the bar shows what the store holds. init() returns
 // { reload } so a host can refresh the bar when its store changes.
+//   show(mark)    -> optional: bring the mark's place into view (e.g. switch route)
+//   shotUrl(mark) -> optional: URL of a stored mark's screenshot
+// With a store the bar also reviews fixes: "3 fixed - review" jumps to each
+// fixed mark (green outline, the screenshot from when it was marked beside it)
+// with Looks good (-> verified) / Reopen (-> reopened, with a note).
 // Inputs are blacked out while the host captures, and input values are never
 // recorded (field text is left out of every mark).
 //
@@ -251,6 +256,10 @@
       '.uim-mask .uim-hover,.uim-mask .uim-like,.uim-mask .uim-link{outline:none!important}' +
       '.uim-mask input,.uim-mask textarea,.uim-mask select,.uim-mask [contenteditable]:not([contenteditable="false"])' +
       '{color:transparent!important;-webkit-text-fill-color:transparent!important;background:#000!important;caret-color:transparent!important}' +
+      '.uim-good{outline:3px solid #2fbf71!important;outline-offset:2px!important}' +
+      '#uim-review{align-items:flex-start}' +
+      '#uim-before{max-height:120px;max-width:260px;border:1px solid #444;border-radius:4px}' +
+      '#uim-rv-text{max-width:360px;line-height:1.4}' +
       '#uim-thumb{height:36px;border:1px solid #444;border-radius:4px;cursor:zoom-in}' +
       '#uim-sketch{position:fixed;inset:5vh 5vw;z-index:2147483647;background:#000c;display:flex;flex-direction:column;gap:6px;' +
       'align-items:center;justify-content:center;padding:10px;border-radius:10px}' +
@@ -264,6 +273,12 @@
     bar.innerHTML =
       '<div class="uim-row"><span id="uim-grip" title="Drag to move">&#x2630; Mark mode: <b id="uim-n">0</b></span>' +
       '<button id="uim-copy">Copy all</button><button id="uim-clear">Clear</button><button id="uim-off">Done</button></div>' +
+      '<div class="uim-row" id="uim-stats" hidden></div>' +
+      '<div class="uim-row" id="uim-review" hidden><img id="uim-before" alt="when it was marked" hidden>' +
+      '<div class="uim-row" style="flex-direction:column;align-items:flex-start"><div id="uim-rv-text"></div>' +
+      '<div class="uim-row"><button id="uim-rv-good">Looks good</button><button id="uim-rv-reopen">Reopen</button>' +
+      '<button id="uim-rv-next">Next</button><button id="uim-rv-close">Close</button></div>' +
+      '<input id="uim-rv-note" hidden placeholder="What is still wrong? Enter reopens it"></div></div>' +
       '<div class="uim-row" id="uim-edit" hidden>' + chips('type', TYPES) +
       chips('scope', ['one', 'all'], ['This one', 'All like this <b id="uim-count"></b>']) +
       '<select id="uim-kind" hidden title="What to add">' + options(ADD_KINDS) + '</select>' +
@@ -281,8 +296,68 @@
     var pending = null, linkTo = null, likes = [], shot = null, sketch = [], shotSeq = 0;
     var thumb = $('uim-thumb'), sketchBtn = $('uim-sketch-btn'), sketchBox = $('uim-sketch');
     var choice = { type: 'fix', scope: 'one' };
-    function refresh() { count.textContent = marks.filter(actionable).length; }
+    var stats = $('uim-stats'), review = $('uim-review'), rvText = $('uim-rv-text'), rvNote = $('uim-rv-note');
+    var before = $('uim-before'), rvList = [], rvAt = 0, rvEl = null;
+    function n(status) { return marks.filter(function (m) { return m.status === status; }).length; }
+    function refresh() {
+      count.textContent = marks.filter(actionable).length;
+      var fixing = n('fixing'), fixed = n('fixed'), declined = n('declined');
+      stats.hidden = !(fixing || fixed || declined);
+      stats.innerHTML = (fixing ? '<span>' + fixing + ' being fixed</span>' : '') +
+        (fixed ? '<button data-review="fixed">' + fixed + ' fixed - review</button>' : '') +
+        (declined ? '<button data-review="declined">' + declined + ' declined</button>' : '');
+    }
     refresh();
+
+    // Review: walk the fixed (or declined) marks one at a time.
+    function reviewShow() {
+      if (rvEl) { rvEl.classList.remove('uim-good'); rvEl = null; }
+      var m = rvList[rvAt];
+      review.hidden = !m;
+      if (!m) return;
+      rvNote.hidden = true; rvNote.value = '';
+      $('uim-rv-good').hidden = m.status !== 'fixed';
+      rvText.textContent = (rvAt + 1) + '/' + rvList.length + ' ' + m.status + ': ' + intent(m) + (m.note || '') +
+        (m.reason ? ' -- fixer: ' + m.reason : '') + (m.pr ? ' (' + m.pr + ')' : '');
+      var url = (opts.shotUrl && opts.shotUrl(m)) || m.shot;
+      before.hidden = !url;
+      if (url) before.src = url;
+      if (opts.show) { try { opts.show(m); } catch (e) {} }
+      setTimeout(function () {  // after any route switch has rendered
+        if (rvList[rvAt] !== m) return;
+        rvEl = resolve(doc, m);
+        if (rvEl) { rvEl.classList.add('uim-good'); rvEl.scrollIntoView({ block: 'center' }); }
+        else rvText.textContent += ' [not found on this screen]';
+      }, 250);
+    }
+    function reviewEnd() { rvList = []; reviewShow(); }
+    function setStatus(m, patch) {
+      Object.assign(m, patch);  // optimistic; the store's answer replaces it
+      Promise.resolve(store.update(m.id, patch)).then(function (saved) {
+        if (!saved || !saved.id) return;
+        var i = marks.findIndex(function (x) { return x.id === saved.id; });
+        if (i >= 0) { marks[i] = Object.assign(saved, { stored: true }); refresh(); }
+      }, function () {});
+      rvList.splice(rvAt, 1);
+      if (rvAt >= rvList.length) rvAt = 0;
+      refresh(); highlight(); reviewShow();
+    }
+    stats.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-review]');
+      if (!b) return;
+      setPending(null);
+      rvList = marks.filter(function (m) { return m.status === b.getAttribute('data-review'); });
+      rvAt = 0; reviewShow();
+    });
+    $('uim-rv-good').addEventListener('click', function () { setStatus(rvList[rvAt], { status: 'verified' }); });
+    $('uim-rv-reopen').addEventListener('click', function () { rvNote.hidden = false; rvNote.focus(); });
+    rvNote.addEventListener('keydown', function (e) {
+      e.stopPropagation();
+      if (e.key === 'Enter' && rvNote.value.trim()) setStatus(rvList[rvAt], { status: 'reopened', note: rvNote.value.trim() });
+      else if (e.key === 'Escape') rvNote.hidden = true;
+    });
+    $('uim-rv-next').addEventListener('click', function () { rvAt = (rvAt + 1) % (rvList.length || 1); reviewShow(); });
+    $('uim-rv-close').addEventListener('click', reviewEnd);
     if (store) $('uim-clear').hidden = true;  // the store keeps every mark; nothing is deleted
 
     // Push buffered marks to the store; merge what it confirms back in by id.
@@ -487,7 +562,7 @@
     function setOn(v) {
       if (!v) commit();
       on = v; bar.hidden = !v;
-      if (!v) setPending(null);
+      if (!v) { setPending(null); reviewEnd(); }
       if (!v && hovered) { hovered.classList.remove('uim-hover'); hovered = null; }
       if (v) { place(savedPos()); reload(); }
       if (observer) { if (v) observer.observe(doc.body, { childList: true, subtree: true }); else observer.disconnect(); }

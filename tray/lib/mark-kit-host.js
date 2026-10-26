@@ -14,6 +14,9 @@
 //                    chrome, not a chat turn). tool_result carries no request
 //                    id, so answers are taken first-in-first-out per tool name;
 //                    the core matches stored marks back by their own id.
+//   show(mark)    -> review: switch to the mark's route (sub-tab is left as is:
+//                    mark mode swallows clicks, so a tab can't be clicked open).
+//   shotUrl(mark) -> file:// URL of the stored screenshot (the window is file://).
 //   onEvent(ev)   -> called from main.html's handleEvent for every Cerebral event.
 //
 // Dual-mode: window.MarkKitHost in the renderer, module.exports for jest.
@@ -81,7 +84,15 @@
       }
     }
 
-    return { context: context, capture: capture, store: store, onEvent: onEvent };
+    function show(m) {
+      var route = m.app && m.app.route;
+      if (route && typeof location !== 'undefined' && location.hash !== '#' + route) location.hash = '#' + route;
+    }
+    function shotUrl(m) {
+      return m.shot_abs ? 'file:///' + encodeURI(m.shot_abs.replace(/\\/g, '/')) : null;
+    }
+
+    return { context: context, capture: capture, store: store, show: show, shotUrl: shotUrl, onEvent: onEvent };
   }
 
   var _exports = { create: create };

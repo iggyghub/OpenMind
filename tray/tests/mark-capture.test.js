@@ -47,3 +47,9 @@ test('host store calls the gated marks tools and answers FIFO per tool name', as
   await expect(b).resolves.toEqual([{ id: 'x' }]);
   await expect(a).resolves.toBeNull();
 });
+
+test('shotUrl turns a stored Windows path into a file URL', () => {
+  const host = MarkKitHost.create(() => true);
+  expect(host.shotUrl({ shot_abs: String.raw`C:\OpenMind\.marks\shots\m 1.png` })).toBe('file:///C:/OpenMind/.marks/shots/m%201.png');
+  expect(host.shotUrl({})).toBeNull();
+});
