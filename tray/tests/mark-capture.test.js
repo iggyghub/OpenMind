@@ -45,11 +45,31 @@ test('host store calls the gated marks tools and answers FIFO per tool name', as
   host.onEvent({ type: 'tool_result', data: { name: 'marks_list', content: '{"marks":[{"id":"x"}]}', is_error: false } });
   host.onEvent({ type: 'tool_result', data: { name: 'marks_add', content: 'Denied', is_error: true } });
   await expect(b).resolves.toEqual([{ id: 'x' }]);
-  await expect(a).resolves.toBeNull();
+  await expect(a).resolves.toEqual({ error: 'Denied' });  // no id: the core keeps it buffered
 });
 
 test('shotUrl turns a stored Windows path into a file URL', () => {
   const host = MarkKitHost.create(() => true);
   expect(host.shotUrl({ shot_abs: String.raw`C:\OpenMind\.marks\shots\m 1.png` })).toBe('file:///C:/OpenMind/.marks/shots/m%201.png');
   expect(host.shotUrl({})).toBeNull();
+});
+
+test('fix: models from models_list with tiers, coding model preferred, run calls marks_fix', async () => {
+  const sent = [];
+  const host = MarkKitHost.create((ev) => { sent.push(ev); return true; });
+  host.onEvent({ type: 'models_list', data: { active: 'custom/budd', task_models: { coding: 'claude/sonnet' }, models: [
+    { id: 'custom/budd', label: 'Budd', is_custom: true, is_cloud: true }, { id: 'claude/sonnet', label: 'Sonnet', is_cloud: true },
+    { id: 'ollama/qwen3:8b', label: 'Qwen' }, { id: 'off', label: 'Off', enabled: false }] } });
+  await expect(host.fix.models()).resolves.toEqual([
+    { id: 'custom/budd', label: 'Budd', where: 'remote' }, { id: 'claude/sonnet', label: 'Sonnet', where: 'cloud' },
+    { id: 'ollama/qwen3:8b', label: 'Qwen', where: 'local' }]);
+  expect(host.fix.preferred()).toBe('claude/sonnet');
+  const r = host.fix.run('custom/budd');
+  expect(sent[0].data).toEqual({ name: 'marks_fix', args: { model: 'custom/budd' }, record: false });
+  host.onEvent({ type: 'tool_result', data: { name: 'marks_fix', content: 'No open marks to fix.', is_error: true } });
+  await expect(r).resolves.toEqual({ error: 'No open marks to fix.' });
+  const reload = jest.fn();
+  host.setKit({ reload });
+  host.onEvent({ type: 'marks_changed', data: {} });
+  expect(reload).toHaveBeenCalled();
 });

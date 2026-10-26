@@ -6947,7 +6947,7 @@
     window.markKitHost = window.MarkKitHost.create(function (ev) {
       return typeof window.sendEvent === 'function' && window.sendEvent(ev);
     });
-    window.markKit = window.MarkKit.init(document, window.markKitHost);  // { reload }
+    window.markKitHost.setKit(window.MarkKit.init(document, window.markKitHost));
   </script>
 
   <script>

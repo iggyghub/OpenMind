@@ -756,3 +756,29 @@ async def test_test_summary_truncation_keeps_tail(tmp_path):
     data = json.loads(result.content)
     # With the fix, test_summary is test_output[-2000:], so it must contain the tail.
     assert data["test_summary"] == long_output[-2000:]
+
+
+# ---------------------------------------------------------------------------
+# mark-kit M6: marks_fix runs self_dev with a chosen model and loads Felix
+# itself after recording the result (no_load).
+# ---------------------------------------------------------------------------
+
+async def test_model_arg_reaches_edit_fn_and_no_load_skips_restart(tmp_path):
+    seen = {}
+
+    def edit(d, desc, model=None):
+        seen["model"] = model
+        return {"branch": "selfdev/m", "committed": True}
+
+    pulls = []
+    plugin = _make(tmp_path, edit_fn=edit, pull_fn=lambda root: pulls.append(root) or (True, "ff"))
+    result = await plugin.call_tool("self_dev", {"change_description": "x", "model": "claude/haiku", "no_load": True})
+    data = json.loads(result.content)
+    assert seen["model"] == "claude/haiku"
+    assert data["merge_decision"] == "auto_merge"
+    assert data["load"]["status"] == "skipped" and pulls == []
+
+
+async def test_two_arg_edit_fn_still_works_without_model(tmp_path):
+    result = await _make(tmp_path).call_tool("self_dev", {"change_description": "x"})
+    assert not result.is_error, result.content
