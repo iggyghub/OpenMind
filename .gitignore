@@ -36,3 +36,6 @@ smoke_client*.py
 
 # trading_data (#831) local OHLCV cache -- machine-local, never source data
 cerebral/cache/
+
+# mark mode store (plugins/marks.py) -- always local, never committed
+.marks/
