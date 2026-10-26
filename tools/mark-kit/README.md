@@ -20,7 +20,9 @@ Host-agnostic core: one file, no dependencies, no imports
 </script>
 ```
 
-Mark format: `mark.schema.json` (draft).
+Hooks (screenshots, a store, review, a fixer) and per-UI-technology recipes:
+`INTEGRATE.md` (also a valid SKILL.md). The mark format: `mark.schema.json`.
+What a fixer does with `.marks/`: `FIX.md`.
 
 ## Tests
 
