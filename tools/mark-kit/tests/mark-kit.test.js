@@ -90,3 +90,18 @@ test('format still reads pre-mark-kit marks (pane, no locator)', () => {
   const out = MarkKit.format([{ pane: 'settings', note: 'n', selector: '#a', text: '', styles: {} }]);
   assert.match(out, /1\. \[settings\] n/);
 });
+
+test('likeSelector ignores state classes; format shows type, kind, scope and link', () => {
+  assert.strictEqual(MarkKit.likeSelector(el('button', { classes: ['del', 'is-on', 'uim-hover'] })), 'button.del');
+  const base = { selector: '#a', text: '', styles: {} };
+  const out = MarkKit.format([
+    { ...base, note: 'n1', type: 'fix' },
+    { ...base, note: 'n2', type: 'remove', scope: 'all', match: 'button.del', matched: 7 },
+    { ...base, note: 'n3', type: 'add', kind: 'section' },
+    { ...base, note: 'n4', type: 'link', link: { relation: 'opens', locator: { anchor: '#p', sel: 'div.tile' }, selector: '#p > div.tile' } },
+  ]);
+  assert.match(out, /1\. \[\?\] n1\n/);
+  assert.match(out, /\(Remove, all like this: 7 matched \(button\.del\)\) n2/);
+  assert.match(out, /\(Add section\) n3/);
+  assert.match(out, /opens: #p div\.tile/);
+});

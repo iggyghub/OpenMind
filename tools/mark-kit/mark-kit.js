@@ -3,11 +3,13 @@
 // mark-kit -- point at a live UI and leave notes for whoever fixes it.
 //
 // Ctrl+Shift+M toggles mark mode. While on, hovering outlines an element;
-// clicking asks "what should change?" and records a mark (a stable locator,
-// the text, the styles that usually matter, viewport + scroll, console errors
-// since the last mark, whatever the host adds via opts.context, and the note).
-// "Copy all" puts every mark on the clipboard as one paste. Marks survive
-// reloads via localStorage. The bar can be dragged; its position is kept.
+// clicking selects it and the bar asks what kind of change (Fix / Remove /
+// Move / Add / Link / Bug / Idea), for this element or all like it, and a
+// note. Each mark records a stable locator, the text, the styles that usually
+// matter, viewport + scroll, console errors since the last mark, and whatever
+// the host adds via opts.context. "Copy all" puts every mark on the clipboard
+// as one paste. Marks survive reloads via localStorage. The bar can be dragged;
+// its position is kept.
 //
 // Host-agnostic: no imports, no knowledge of the app it is loaded into
 // (tests/boundary.test.js enforces this). A host calls
@@ -21,6 +23,9 @@
   var POS_KEY = 'mark-kit-pos';
   var STYLE_PROPS = ['font-size', 'font-weight', 'line-height', 'color', 'background-color',
     'padding', 'margin', 'gap', 'border-radius', 'width', 'height'];
+  var TYPES = ['fix', 'remove', 'move', 'add', 'link', 'bug', 'idea'];
+  var ADD_KINDS = ['page', 'tab', 'section', 'control', 'field'];
+  var RELATIONS = ['opens', 'shows data from', 'stays in sync with', 'looks like'];
 
   function esc(id) { return typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : id; }
   function ownClasses(el) {
@@ -29,6 +34,7 @@
       .filter(function (c) { return c.indexOf('uim-') !== 0 && c.indexOf('is-') !== 0; }) : [];
   }
   function shortText(el) { return (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80); }
+  function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
   // Full CSS path, stopping at the first ancestor with an id. Fallback locator.
   function cssPath(el) {
@@ -49,16 +55,21 @@
     return parts.join(' > ');
   }
 
+  // "Like this" = same tag and same (non-state) class list.
+  function likeSelector(el) {
+    var cls = ownClasses(el);
+    return el.tagName.toLowerCase() + (cls.length ? '.' + cls.map(esc).join('.') : '');
+  }
+
   // Short stable locator: nearest id'd ancestor + tag.classes, narrowed by text,
   // and an index among the matches only when text still leaves it ambiguous.
   function locate(el) {
     if (el.id) return { sel: '#' + esc(el.id) };
     var root = el.parentElement;
     while (root && !root.id) root = root.parentElement;
-    var cls = ownClasses(el);
     var loc = {
       anchor: root ? '#' + esc(root.id) : '',
-      sel: el.tagName.toLowerCase() + (cls.length ? '.' + cls.map(esc).join('.') : ''),
+      sel: likeSelector(el),
       text: shortText(el).slice(0, 40),
     };
     var role = el.getAttribute && el.getAttribute('role');
@@ -109,10 +120,21 @@
     return mark;
   }
 
+  // Just enough to find the other end of a Link mark again.
+  function pointer(el) { return { locator: locate(el), selector: cssPath(el), text: shortText(el) }; }
+
   function locText(loc) {
     if (!loc) return '';
     return [loc.anchor, loc.sel].filter(Boolean).join(' ') +
       (loc.text ? ' "' + loc.text + '"' : '') + (loc.nth != null ? ' #' + (loc.nth + 1) : '');
+  }
+
+  // "(Add section, all like this: 7 matched)" -- empty for a plain one-off Fix.
+  function intent(m) {
+    var bits = [];
+    if (m.type && (m.type !== 'fix' || m.scope === 'all')) bits.push(cap(m.type) + (m.kind ? ' ' + m.kind : ''));
+    if (m.scope === 'all') bits.push('all like this: ' + m.matched + ' matched (' + m.match + ')');
+    return bits.length ? '(' + bits.join(', ') + ') ' : '';
   }
 
   function format(marks) {
@@ -121,10 +143,11 @@
       var where = Object.keys(app).filter(function (k) { return app[k]; })
         .map(function (k) { return app[k]; }).join(' / ');
       var s = Object.keys(m.styles || {}).map(function (k) { return k + ': ' + m.styles[k]; }).join('; ');
-      return (i + 1) + '. [' + (where || '?') + '] ' + m.note + '\n' +
+      return (i + 1) + '. [' + (where || '?') + '] ' + intent(m) + m.note + '\n' +
         (m.locator ? '   locator: ' + locText(m.locator) + '\n' : '') +
         '   selector: ' + m.selector + '\n' +
         (m.text ? '   text: "' + m.text + '"\n' : '') +
+        (m.link ? '   ' + m.link.relation + ': ' + (locText(m.link.locator) || m.link.selector) + '\n' : '') +
         (m.viewport ? '   viewport: ' + m.viewport.w + 'x' + m.viewport.h +
           (m.scroll && (m.scroll.x || m.scroll.y) ? ', scroll ' + m.scroll.x + ',' + m.scroll.y : '') + '\n' : '') +
         (m.errors && m.errors.length ? '   errors: ' + m.errors.join(' | ') + '\n' : '') +
@@ -150,6 +173,15 @@
     return function take() { var out = buf; buf = []; return out; };
   }
 
+  function chips(name, values, labels) {
+    return '<span class="uim-chips" data-group="' + name + '">' + values.map(function (v, i) {
+      return '<button type="button" data-v="' + v + '">' + (labels ? labels[i] : cap(v)) + '</button>';
+    }).join('') + '</span>';
+  }
+  function options(values) {
+    return values.map(function (v) { return '<option value="' + v + '">' + v + '</option>'; }).join('');
+  }
+
   // Browser-only wiring below.
   function init(doc, opts) {
     opts = opts || {};
@@ -160,25 +192,38 @@
     css.textContent =
       '.uim-hover{outline:2px dashed var(--accent,#7c5cfc)!important;outline-offset:1px!important;cursor:crosshair!important}' +
       '.uim-marked{outline:2px solid var(--color-warning,#e5a50a)!important;outline-offset:1px!important}' +
-      '#uim-bar{position:fixed;right:12px;bottom:12px;z-index:2147483647;display:flex;gap:6px;align-items:center;' +
-      'padding:6px 10px;border-radius:10px;background:#1b1b22;border:1px solid var(--accent,#7c5cfc);' +
+      '.uim-like{outline:1px dotted var(--color-warning,#e5a50a)!important;outline-offset:1px!important}' +
+      '.uim-link{outline:2px solid #3fa7ff!important;outline-offset:1px!important}' +
+      '#uim-bar{position:fixed;right:12px;bottom:12px;z-index:2147483647;display:flex;flex-direction:column;gap:6px;' +
+      'padding:6px 10px;border-radius:10px;background:#1b1b22;border:1px solid var(--accent,#7c5cfc);max-width:calc(100vw - 24px);' +
       'box-shadow:0 4px 16px rgba(0,0,0,.4);font:12px system-ui;color:#ddd}' +
-      '#uim-bar[hidden]{display:none}' +
+      '#uim-bar[hidden],#uim-bar [hidden]{display:none!important}' +
+      '#uim-bar .uim-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}' +
       '#uim-grip{cursor:move;user-select:none}' +
-      '#uim-bar button{font:inherit;padding:2px 8px;border-radius:6px;border:1px solid #444;background:#2a2a33;color:#ddd;cursor:pointer}';
+      '#uim-bar button,#uim-bar select{font:inherit;padding:2px 8px;border-radius:6px;border:1px solid #444;background:#2a2a33;color:#ddd;cursor:pointer}' +
+      '#uim-bar .uim-chips{display:inline-flex;gap:2px}' +
+      '#uim-bar .uim-chips button.on{background:var(--accent,#7c5cfc);border-color:var(--accent,#7c5cfc);color:#fff}' +
+      '#uim-note{flex:1;min-width:240px;font:inherit;padding:2px 6px;border-radius:6px;border:1px solid #555;background:#111;color:#eee}';
     doc.head.appendChild(css);
     var bar = doc.createElement('div');
     bar.id = 'uim-bar';
     bar.hidden = true;
-    // Electron has no window.prompt(), so the note is typed into the bar itself.
-    bar.innerHTML = '<span id="uim-grip" title="Drag to move">&#x2630; Mark mode: <b id="uim-n">0</b></span>' +
-      '<input id="uim-note" placeholder="Click something, then say what should change" hidden ' +
-      'style="width:280px;font:inherit;padding:2px 6px;border-radius:6px;border:1px solid #555;background:#111;color:#eee">' +
-      '<button id="uim-copy">Copy all</button><button id="uim-clear">Clear</button><button id="uim-off">Done</button>';
+    // Electron has no window.prompt(), so everything is picked/typed in the bar itself.
+    bar.innerHTML =
+      '<div class="uim-row"><span id="uim-grip" title="Drag to move">&#x2630; Mark mode: <b id="uim-n">0</b></span>' +
+      '<button id="uim-copy">Copy all</button><button id="uim-clear">Clear</button><button id="uim-off">Done</button></div>' +
+      '<div class="uim-row" id="uim-edit" hidden>' + chips('type', TYPES) +
+      chips('scope', ['one', 'all'], ['This one', 'All like this <b id="uim-count"></b>']) +
+      '<select id="uim-kind" hidden title="What to add">' + options(ADD_KINDS) + '</select>' +
+      '<select id="uim-rel" hidden title="How the two are linked">' + options(RELATIONS) + '</select>' +
+      '<span id="uim-link-hint" hidden>then click the other element</span></div>' +
+      '<div class="uim-row" id="uim-note-row" hidden><input id="uim-note" placeholder="What should change? Enter saves, Esc cancels"></div>';
     doc.body.appendChild(bar);
-    var count = bar.querySelector('#uim-n');
-    var input = bar.querySelector('#uim-note');
-    var pending = null;
+    function $(id) { return bar.querySelector('#' + id); }
+    var count = $('uim-n'), input = $('uim-note'), editRow = $('uim-edit'), noteRow = $('uim-note-row');
+    var kindSel = $('uim-kind'), relSel = $('uim-rel'), linkHint = $('uim-link-hint');
+    var pending = null, linkTo = null, likes = [];
+    var choice = { type: 'fix', scope: 'one' };
     function refresh() { count.textContent = marks.length; }
     refresh();
 
@@ -191,7 +236,7 @@
       bar.style.right = 'auto'; bar.style.bottom = 'auto';
     }
     function savedPos() { try { return JSON.parse(localStorage.getItem(POS_KEY)); } catch (e) { return null; } }
-    bar.querySelector('#uim-grip').addEventListener('mousedown', function (e) {
+    $('uim-grip').addEventListener('mousedown', function (e) {
       e.preventDefault();
       var r = bar.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
       function move(ev) { place({ x: ev.clientX - dx, y: ev.clientY - dy }); }
@@ -203,11 +248,14 @@
       doc.addEventListener('mousemove', move, true); doc.addEventListener('mouseup', up, true);
     });
 
+    function clearClass(cls, keep) {
+      Array.prototype.forEach.call(doc.querySelectorAll('.' + cls), function (m) {
+        if (m !== keep) m.classList.remove(cls);
+      });
+    }
     // Outline every mark that still resolves. Re-run after re-renders while on.
     function highlight() {
-      Array.prototype.forEach.call(doc.querySelectorAll('.uim-marked'), function (m) {
-        if (m !== pending) m.classList.remove('uim-marked');
-      });
+      clearClass('uim-marked', pending);
       if (!on) return;
       marks.forEach(function (m) { var el = resolve(doc, m); if (el) el.classList.add('uim-marked'); });
     }
@@ -217,28 +265,64 @@
       clearTimeout(timer); timer = setTimeout(highlight, 150);
     }) : null;
 
+    // Reflect `choice` in the chips + extra pickers, and the "like this" set.
+    function showChoice() {
+      Array.prototype.forEach.call(bar.querySelectorAll('.uim-chips button'), function (b) {
+        b.classList.toggle('on', choice[b.parentNode.getAttribute('data-group')] === b.getAttribute('data-v'));
+      });
+      kindSel.hidden = choice.type !== 'add';
+      relSel.hidden = linkHint.hidden = choice.type !== 'link';
+      linkHint.textContent = linkTo ? 'linked to "' + shortText(linkTo).slice(0, 30) + '"' : 'then click the other element';
+      likes.forEach(function (el) { el.classList.remove('uim-like'); });
+      likes = [];
+      if (pending && choice.scope === 'all') {
+        try { likes = Array.prototype.slice.call(doc.querySelectorAll(likeSelector(pending))); } catch (e) { likes = [pending]; }
+        likes.forEach(function (el) { if (el !== pending) el.classList.add('uim-like'); });
+      }
+      $('uim-count').textContent = pending && choice.scope === 'all' ? '(' + likes.length + ')' : '';
+    }
+    editRow.addEventListener('click', function (e) {
+      var b = e.target.closest('.uim-chips button');
+      if (!b) return;
+      choice[b.parentNode.getAttribute('data-group')] = b.getAttribute('data-v');
+      if (choice.type !== 'link' && linkTo) { linkTo.classList.remove('uim-link'); linkTo = null; }
+      showChoice(); input.focus();
+    });
+
     function setPending(el) {
       if (pending) pending.classList.remove('uim-marked');
-      pending = el;
-      input.hidden = !el; input.value = '';
+      if (linkTo) linkTo.classList.remove('uim-link');
+      pending = el; linkTo = null;
+      choice = { type: 'fix', scope: 'one' };
+      editRow.hidden = noteRow.hidden = !el;
+      input.value = '';
       if (el) { el.classList.add('uim-marked'); input.focus(); }
+      showChoice();
     }
-    // Saves a typed-but-unsubmitted note too, so Done / Copy all / clicking the
+    // Saves a typed-but-unsubmitted mark too, so Done / Copy all / clicking the
     // next element never silently drops it (the first live mark was lost that way).
+    // A plain Fix needs a note; any other chosen type says enough on its own.
     function commit() {
       var note = input.value.trim();
-      if (!pending || !note) return;
+      if (!pending || (!note && choice.type === 'fix')) return;
       var extra = {
+        type: choice.type,
         created: new Date().toISOString(),
         url: win.location ? win.location.href.split('?')[0].split('#')[0] + win.location.hash : '',  // no query: may hold tokens
         viewport: { w: win.innerWidth, h: win.innerHeight },
         scroll: { x: Math.round(win.scrollX || 0), y: Math.round(win.scrollY || 0) },
         errors: takeErrors(),
       };
+      if (choice.scope === 'all') { extra.scope = 'all'; extra.match = likeSelector(pending); extra.matched = likes.length; }
+      if (choice.type === 'add') extra.kind = kindSel.value;
+      if (choice.type === 'link' && linkTo) extra.link = Object.assign({ relation: relSel.value }, pointer(linkTo));
       if (opts.context) { try { extra.app = opts.context(pending) || {}; } catch (e) { extra.app = {}; } }
       marks.push(describe(pending, win.getComputedStyle(pending), note, extra));
       save(marks); refresh();
-      pending = null; input.hidden = true;  // keep the solid outline on the marked element
+      var done = pending;
+      pending = null;  // keep the solid outline on the marked element
+      setPending(null);
+      done.classList.add('uim-marked');
     }
     input.addEventListener('keydown', function (e) {
       e.stopPropagation();
@@ -273,14 +357,20 @@
         e.preventDefault(); e.stopPropagation();
         if (type !== 'click') return;
         e.target.classList.remove('uim-hover');
+        if (pending && choice.type === 'link' && e.target !== pending) {  // the other end of a Link
+          if (linkTo) linkTo.classList.remove('uim-link');
+          linkTo = e.target; linkTo.classList.add('uim-link');
+          showChoice(); input.focus();
+          return;
+        }
         commit();
         setPending(e.target);
       }, true);
     });
-    bar.querySelector('#uim-copy').addEventListener('click', function () {
+    $('uim-copy').addEventListener('click', function () {
       commit();
       var text = format(marks);
-      var btn = bar.querySelector('#uim-copy');
+      var btn = $('uim-copy');
       function fallback() {  // execCommand path if the async clipboard API is refused
         var ta = doc.createElement('textarea');
         ta.value = text; doc.body.appendChild(ta); ta.select();
@@ -290,15 +380,18 @@
       if (!navigator.clipboard) return fallback();
       navigator.clipboard.writeText(text).then(function () { btn.textContent = 'Copied ' + marks.length; }, fallback);
     });
-    bar.querySelector('#uim-clear').addEventListener('click', function () {
+    $('uim-clear').addEventListener('click', function () {
       marks = []; save(marks); refresh();
       setPending(null); highlight();
-      bar.querySelector('#uim-copy').textContent = 'Copy all';
+      $('uim-copy').textContent = 'Copy all';
     });
-    bar.querySelector('#uim-off').addEventListener('click', function () { setOn(false); });
+    $('uim-off').addEventListener('click', function () { setOn(false); });
   }
 
-  var _exports = { init: init, cssPath: cssPath, locate: locate, resolve: resolve, describe: describe, format: format };
+  var _exports = {
+    init: init, cssPath: cssPath, locate: locate, resolve: resolve, describe: describe, format: format,
+    likeSelector: likeSelector, TYPES: TYPES,
+  };
 
   if (typeof module === 'object' && module && module.exports) {
     module.exports = _exports;
