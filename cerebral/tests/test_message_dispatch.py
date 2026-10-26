@@ -107,6 +107,8 @@ _EXPECTED_TYPES = frozenset({
     "consent_response",
     "irreversible_modal_response",
     "call_tool",
+    "mark_capture",
+    "mark_capture_result",
     "computer_use_stop",
     "computer_use_take_over",
     "computer_use_release",
