@@ -34,3 +34,16 @@ test('host capture round-trips through send + onEvent, and gives null when offli
   const offline = MarkKitHost.create(() => false);
   await expect(offline.capture({ x: 0, y: 0, width: 5, height: 5 })).resolves.toBeNull();
 });
+
+test('host store calls the gated marks tools and answers FIFO per tool name', async () => {
+  const sent = [];
+  const host = MarkKitHost.create((ev) => { sent.push(ev); return true; });
+  const a = host.store.add({ id: 'm1', note: 'n', shot: 'data:png', stored: false });
+  const b = host.store.list();
+  expect(sent[0]).toEqual({ type: 'call_tool', data: { name: 'marks_add', args: { mark: { id: 'm1', note: 'n' }, shot: 'data:png' }, record: false } });
+  expect(sent[1].data.name).toBe('marks_list');
+  host.onEvent({ type: 'tool_result', data: { name: 'marks_list', content: '{"marks":[{"id":"x"}]}', is_error: false } });
+  host.onEvent({ type: 'tool_result', data: { name: 'marks_add', content: 'Denied', is_error: true } });
+  await expect(b).resolves.toEqual([{ id: 'x' }]);
+  await expect(a).resolves.toBeNull();
+});

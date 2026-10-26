@@ -16,6 +16,12 @@
 //   MarkKit.init(document, { context: function (el) { return {...}; } })
 // and the context object is stored on each mark as `app`. Optional hooks:
 //   capture(rect) -> Promise<png data URL | null>   screenshot of a viewport rect
+//   store: { add(mark) -> Promise<stored mark | null>,
+//            list() -> Promise<marks | null>,
+//            update(id, patch) -> Promise<mark | null> }
+// With a store, marks are written there (localStorage only buffers the ones not
+// stored yet) and the bar shows what the store holds. init() returns
+// { reload } so a host can refresh the bar when its store changes.
 // Inputs are blacked out while the host captures, and input values are never
 // recorded (field text is left out of every mark).
 //
@@ -175,13 +181,18 @@
 
   function load() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; } }
   // Screenshots stay in memory / the host store, never in localStorage (quota).
+  // With a store only the marks it hasn't confirmed yet are buffered here.
   function save(marks) {
     try {
-      localStorage.setItem(KEY, JSON.stringify(marks.map(function (m) {
+      localStorage.setItem(KEY, JSON.stringify(marks.filter(function (m) { return !m.stored; }).map(function (m) {
         var c = Object.assign({}, m); delete c.shot; return c;
       })));
     } catch (e) {}
   }
+
+  // Still waiting on a fix (or never given a status: no store).
+  function actionable(m) { return !m.status || m.status === 'open' || m.status === 'reopened'; }
+  function newId() { return 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
   // Viewport rect around an element's box with some margin, clamped to the window.
   function shotRect(r, vw, vh, margin) {
@@ -219,7 +230,8 @@
     opts = opts || {};
     var win = doc.defaultView;
     var takeErrors = watchErrors(win);
-    var on = false, hovered = null, marks = load();
+    var on = false, hovered = null, store = opts.store;
+    var marks = load().map(function (m) { if (!m.id) m.id = newId(); return m; });  // pre-store marks had none
     var css = doc.createElement('style');
     css.textContent =
       '.uim-hover{outline:2px dashed var(--accent,#7c5cfc)!important;outline-offset:1px!important;cursor:crosshair!important}' +
@@ -269,8 +281,31 @@
     var pending = null, linkTo = null, likes = [], shot = null, sketch = [], shotSeq = 0;
     var thumb = $('uim-thumb'), sketchBtn = $('uim-sketch-btn'), sketchBox = $('uim-sketch');
     var choice = { type: 'fix', scope: 'one' };
-    function refresh() { count.textContent = marks.length; }
+    function refresh() { count.textContent = marks.filter(actionable).length; }
     refresh();
+    if (store) $('uim-clear').hidden = true;  // the store keeps every mark; nothing is deleted
+
+    // Push buffered marks to the store; merge what it confirms back in by id.
+    function push(m) {
+      Promise.resolve(store.add(Object.assign({}, m))).then(function (saved) {
+        if (!saved || !saved.id) return;  // offline / refused: stays buffered for next time
+        var i = marks.findIndex(function (x) { return x.id === saved.id; });
+        if (i < 0) return;
+        marks[i] = Object.assign({}, saved, { stored: true });
+        save(marks); refresh();
+      }, function () {});
+    }
+    function reload() {
+      if (!store) return Promise.resolve();
+      marks.forEach(function (m) { if (!m.stored) push(m); });
+      return Promise.resolve(store.list()).then(function (list) {
+        if (!Array.isArray(list)) return;
+        var ids = {};
+        list.forEach(function (m) { m.stored = true; ids[m.id] = true; });
+        marks = list.concat(marks.filter(function (m) { return !m.stored && !ids[m.id]; }));
+        save(marks); refresh(); highlight();
+      }, function () {});
+    }
 
     // Drag by the grip; position kept and clamped back on screen.
     function place(pos) {
@@ -302,7 +337,7 @@
     function highlight() {
       clearClass('uim-marked', pending);
       if (!on) return;
-      marks.forEach(function (m) { var el = resolve(doc, m); if (el) el.classList.add('uim-marked'); });
+      marks.filter(actionable).forEach(function (m) { var el = resolve(doc, m); if (el) el.classList.add('uim-marked'); });
     }
     var timer = null;
     // childList only: our own class toggles are attribute changes, so no loop.
@@ -418,6 +453,7 @@
       var note = input.value.trim();
       if (!pending || (!note && choice.type === 'fix')) return;
       var extra = {
+        id: newId(),
         type: choice.type,
         created: new Date().toISOString(),
         url: win.location ? win.location.href.split('?')[0].split('#')[0] + win.location.hash : '',  // no query: may hold tokens
@@ -433,8 +469,10 @@
       });
       if (choice.type === 'link' && linkTo) extra.link = Object.assign({ relation: relSel.value }, pointer(linkTo));
       if (opts.context) { try { extra.app = opts.context(pending) || {}; } catch (e) { extra.app = {}; } }
-      marks.push(describe(pending, win.getComputedStyle(pending), note, extra));
+      var mark = describe(pending, win.getComputedStyle(pending), note, extra);
+      marks.push(mark);
       save(marks); refresh();
+      if (store) push(mark);
       var done = pending;
       pending = null;  // keep the solid outline on the marked element
       setPending(null);
@@ -451,7 +489,7 @@
       on = v; bar.hidden = !v;
       if (!v) setPending(null);
       if (!v && hovered) { hovered.classList.remove('uim-hover'); hovered = null; }
-      if (v) place(savedPos());
+      if (v) { place(savedPos()); reload(); }
       if (observer) { if (v) observer.observe(doc.body, { childList: true, subtree: true }); else observer.disconnect(); }
       highlight();
     }
@@ -485,16 +523,17 @@
     });
     $('uim-copy').addEventListener('click', function () {
       commit();
-      var text = format(marks);
+      var open = marks.filter(actionable);
+      var text = format(open);
       var btn = $('uim-copy');
       function fallback() {  // execCommand path if the async clipboard API is refused
         var ta = doc.createElement('textarea');
         ta.value = text; doc.body.appendChild(ta); ta.select();
         var ok = doc.execCommand('copy'); ta.remove();
-        btn.textContent = ok ? 'Copied ' + marks.length : 'Copy failed';
+        btn.textContent = ok ? 'Copied ' + open.length : 'Copy failed';
       }
       if (!navigator.clipboard) return fallback();
-      navigator.clipboard.writeText(text).then(function () { btn.textContent = 'Copied ' + marks.length; }, fallback);
+      navigator.clipboard.writeText(text).then(function () { btn.textContent = 'Copied ' + open.length; }, fallback);
     });
     $('uim-clear').addEventListener('click', function () {
       marks = []; save(marks); refresh();
@@ -502,11 +541,12 @@
       $('uim-copy').textContent = 'Copy all';
     });
     $('uim-off').addEventListener('click', function () { setOn(false); });
+    return { reload: reload };
   }
 
   var _exports = {
     init: init, cssPath: cssPath, locate: locate, resolve: resolve, describe: describe, format: format,
-    likeSelector: likeSelector, shotRect: shotRect, TYPES: TYPES,
+    likeSelector: likeSelector, shotRect: shotRect, actionable: actionable, TYPES: TYPES,
   };
 
   if (typeof module === 'object' && module && module.exports) {
