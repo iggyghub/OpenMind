@@ -155,3 +155,24 @@ Tracer-bullet, three slices. **The MVP is Slice 1.** Slices 2 and 3 are follow-o
 - **Tray-window-state caches in `tray/main.js` collapse to fewer surfaces** as Slice 2 lands. The six cached snapshots (`permissionsState`, `credentialsState`, `toolsList`, `pluginsList`, `insightsList`, `memoryList`) consolidate into the Main window's renderer state.
 - **The post-v1 "body" visualiser theme** has a clean migration path — the visualiser is a process-level floating window, independent of the Main window. Replacing the orb renderer with a body renderer is a v2 issue with no Main-window architectural blockers.
 - **Daily-driver stability becomes the slice gate.** Each of the three slices must hit the CONTEXT.md v1 ship criterion ("the core wake → queue → approve loop does not break for daily-use stretches") before the next slice merges. Slice 1 alone proves "Felix has a window" — the MVP.
+
+## Amendment (2026-10-26) -- window screenshots without a preload (mark-kit M3)
+
+Mark mode (`tools/mark-kit`, host glue `tray/lib/mark-kit-host.js`) attaches a
+screenshot to each mark. The renderer cannot capture its own pixels, and the
+Main window keeps **no preload** -- the portability invariant above stands.
+
+**Decision:** the capture runs in the tray main process, reached over the same
+WebSocket every renderer already uses. The renderer sends `mark_capture
+{id, rect}` to Cerebral, which only relays it (`_msg_mark_capture_relay`); the
+tray main process answers with `webContents.capturePage(rect)` of the Main
+window as `mark_capture_result {id, png}` through the same relay.
+
+- Rejected: a capture-only preload (breaks "no preload on the Main window",
+  ADR-0007's tested invariant) and Cerebral's OS screenshot of the window rect
+  (wrong pixels when the window is covered, and DPI / multi-monitor maths).
+- Not ADR-0005 `screen_capture`: `capturePage` sees only Felix's own window,
+  which the renderer can already read as DOM. Persisting the image is a write
+  and goes through the gated `marks_add` tool like any other.
+- Inputs are blacked out (CSS mask on `<html>`) for the duration of the
+  capture, and mark text never includes field contents.

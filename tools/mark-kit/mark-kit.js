@@ -358,14 +358,15 @@
       function unmask() { if (!done) { done = true; root.classList.remove('uim-mask'); } }
       root.classList.add('uim-mask');
       setTimeout(unmask, 3000);  // a host that never answers must not leave the page masked
-      // Two frames so the mask is painted before the host grabs pixels.
-      win.requestAnimationFrame(function () { win.requestAnimationFrame(function () {
+      // A few frames so the mask is painted before the host grabs pixels.
+      // ponytail: timer, not requestAnimationFrame -- rAF never fires in a background tab.
+      setTimeout(function () {
         Promise.resolve(opts.capture(rect)).then(function (url) {
           unmask();
           if (seq !== shotSeq || !url) return;  // a newer pick superseded this one
           shot = url; thumb.src = url; thumb.hidden = false; showChoice();
         }, unmask);
-      }); });
+      }, 80);
     }
 
     // Add marks: draw boxes on the screenshot. The boxes are burned into the image.
