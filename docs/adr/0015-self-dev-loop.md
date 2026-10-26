@@ -419,3 +419,27 @@ reloaded #812's code yet.
   for both fixes lives in `tray/lib/boot-check.js` instead, specifically so
   it stays hermetically testable; `main.js`'s job is now just wiring real
   `git`/`app` calls into it.
+
+## Amendment (2026-10-26) -- marks as a self_dev client: model pin + no_load (mark-kit M6)
+
+Mark mode's **Check the marks** button (MARK-MODE-IDEAS.md decision 5) is the
+"generalize self_dev into a fix pipeline with a target repo" decision. Most of
+it already existed: `target_dir` runs the same clone -> edit -> test -> PR
+pipeline on any local repo and skips the restart. Two arguments were missing:
+
+- `model` -- pins the edit step to one model for this run (the bar's model
+  menu), passed to `edit_fn` only when set and on to
+  `router.complete(..., model=)`, which falls back like a per-task model when
+  the id is unknown or unreachable.
+- `no_load` -- after an auto-merge into Felix's own repo, skip the pull +
+  restart. `marks_fix` (plugins/marks.py) records the outcome on the marks
+  first (`fixed` + PR, or `reopened` with the reason), broadcasts
+  `marks_changed`, and only then calls `self_dev_load` -- a restart inside
+  `_run` would kill Cerebral before the marks were updated.
+
+`marks_fix` calls `self_dev` through `_dispatch_tray_call_tool`, so the
+ADR-0005 gate (shell_exec) applies exactly as for any other caller. It runs in
+the background with a single-run guard (ADR-0028 R5).
+
+Built by hand, not through self_dev, because the remote model (Budd) was down
+on 2026-10-26; the self_dev diff is two arguments and their tests.
