@@ -6282,6 +6282,17 @@ async def _msg_call_tool(msg: dict) -> None:
         })
 
 
+@_message_handler("mark_capture")
+@_message_handler("mark_capture_result")
+async def _msg_mark_capture_relay(msg: dict) -> None:
+    # mark-kit screenshots (ADR-0007 amendment 2026-10-26): the Main window
+    # has no preload, so its capture request reaches the tray main process
+    # (webContents.capturePage of Felix's own window) and the PNG comes back
+    # over this relay. Pass-through only: nothing is stored here -- writing the
+    # image goes through the gated marks_add tool.
+    await _broadcast({"type": msg.get("type"), "data": msg.get("data") or {}})
+
+
 @_message_handler("computer_use_stop")
 async def _msg_computer_use_stop(msg: dict) -> None:
     # S2 #576 -- (c) leg of the ADR-0016 three-part kill switch. Fired by

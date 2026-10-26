@@ -105,3 +105,15 @@ test('likeSelector ignores state classes; format shows type, kind, scope and lin
   assert.match(out, /\(Add section\) n3/);
   assert.match(out, /opens: #p div\.tile/);
 });
+
+test('shotRect adds a margin and clamps to the viewport', () => {
+  assert.deepStrictEqual(MarkKit.shotRect({ left: 10, top: 100, right: 60, bottom: 120 }, 800, 600, 40),
+    { x: 0, y: 60, width: 100, height: 100 });
+  assert.strictEqual(MarkKit.shotRect({ left: 900, top: 0, right: 950, bottom: 10 }, 800, 600, 0), null);
+});
+
+test('typed values never reach a mark: fields have no text', () => {
+  const field = el('textarea', { text: 'my secret draft' });
+  assert.strictEqual(MarkKit.describe(field, computed({}), 'n').text, '');
+  assert.strictEqual(MarkKit.locate(el('input', { parent: el('div', { id: 'f' }) })).text, '');
+});
