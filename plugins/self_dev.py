@@ -642,6 +642,21 @@ class SelfDevPlugin:
                                 "is stuck on a bad recorded phase."
                             ),
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Model id to make the edit with, instead of the "
+                                "self_dev task model (falls back if unavailable)."
+                            ),
+                        },
+                        "no_load": {
+                            "type": "boolean",
+                            "description": (
+                                "After an auto-merge into Felix's own repo, skip the "
+                                "pull + restart; the caller runs self_dev_load itself "
+                                "(e.g. after recording the result first)."
+                            ),
+                        },
                     },
                     "required": ["change_description"],
                 },
@@ -806,7 +821,11 @@ class SelfDevPlugin:
             edit_result = resumed["edit"]["result"]
         else:
             try:
-                edit_result = self._resolve_edit()(clone_dir, description)
+                model = str((args or {}).get("model") or "").strip()
+                # Only pass model when set: injected test/legacy edit_fns take two args.
+                edit_result = self._resolve_edit()(
+                    clone_dir, description, **({"model": model} if model else {})
+                )
                 if inspect.isawaitable(edit_result):
                     edit_result = await edit_result
             except NotImplementedError as exc:
@@ -970,6 +989,8 @@ class SelfDevPlugin:
                 "status": "skipped",
                 "reason": "target_dir set -- not Felix's own repo, no restart needed",
             }
+        elif (args or {}).get("no_load"):
+            load_data = {"status": "skipped", "reason": "no_load -- caller runs self_dev_load"}
         else:
             load_result = await self._load({"pr_url": pr_url})
             load_data = (

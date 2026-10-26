@@ -2341,3 +2341,13 @@ async def test_chat_call_never_cut_by_grace(monkeypatch):
     backend.release_all()
     assert await asyncio.wait_for(first, 1.0) == "a:chat"
     assert await asyncio.wait_for(second, 1.0) == "b:chat"
+
+
+async def test_complete_model_arg_pins_one_call_and_unknown_falls_back():
+    # mark-kit M6: "Check the marks" picks a model for one self_dev run.
+    ollama = AsyncMock(); ollama.complete.return_value = "from ollama"
+    claw = AsyncMock(); claw.complete.return_value = "from claude"
+    router = ModelRouter(backends={"ollama/gemma4": ollama, "claude/haiku": claw})
+    assert await router.complete("p", task_type="self_dev", model="claude/haiku") == "from claude"
+    assert await router.complete("p", task_type="self_dev", model="nope/x") == "from ollama"
+    assert router.active_model == "ollama/gemma4"

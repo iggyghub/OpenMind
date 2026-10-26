@@ -3175,14 +3175,16 @@ def _self_dev_bounded_block(rel: str, content: str | None, max_tokens: int) -> s
     return header + _self_dev_truncate_to_tokens(content, room) + footer
 
 
-async def _self_dev_edit(clone_dir, description: str) -> dict:
+async def _self_dev_edit(clone_dir, description: str, model: str | None = None) -> dict:
     """self_dev edit_fn: model-driven scoped edit + commit inside the clone.
-    Returns {branch, committed, written}."""
+    Returns {branch, committed, written}. `model` pins the run to one model
+    (default: the user's self_dev task model)."""
     import uuid
     from pathlib import Path as _P
     from cerebral import self_dev_io as _sdio
 
     clone_dir = _P(clone_dir)
+    pin = {"model": model} if model else {}  # only when set: router fakes take two args
 
     candidates = _self_dev_candidates(clone_dir)
 
@@ -3196,13 +3198,13 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
         "you will actually write to. Include existing test files you need to "
         "update.\n\nFILES:\n" + "\n".join(candidates)
     )
-    plan_raw = await _router.complete(plan_prompt, task_type="self_dev")
+    plan_raw = await _router.complete(plan_prompt, task_type="self_dev", **pin)
     wanted = [w for w in (_sdio.extract_json_value(plan_raw, "[") or []) if isinstance(w, str)]
     wanted = wanted[:_SELF_DEV_MAX_FILES]
 
     # 2. Resolve the prompt budget from the model that will actually serve the
     #    edit call (self_dev task pin, falling back to the active model).
-    model_id = _router.get_task_model("self_dev")
+    model_id = model or _router.get_task_model("self_dev")
     context_window = _router.context_window_for(model_id)
     prompt_budget = int(context_window * (1 - _SELF_DEV_RESPONSE_RESERVE))
 
@@ -3290,7 +3292,7 @@ async def _self_dev_edit(clone_dir, description: str) -> dict:
         "[self_dev] edit prompt: ~%d tokens (budget %d, window %d, model %s)",
         estimate_tokens(edit_prompt), prompt_budget, context_window, model_id,
     )
-    edit_raw = await _router.complete(edit_prompt, task_type="self_dev")
+    edit_raw = await _router.complete(edit_prompt, task_type="self_dev", **pin)
 
     # 4. Apply the edits (confined to the clone) and commit on a new branch.
     written = _sdio.apply_search_replace(clone_dir, edit_raw, allowed=set(wanted))
@@ -8492,6 +8494,8 @@ def _wire_plugin_seams() -> None:
         ("documents", "set_change_hook_fn", _docs_resume_change_hook),              # S7 #448
         ("job_search", "set_register_doc_fn", _jobs_register_doc),                  # S7 #448
         ("self_dev", "set_edit_fn", _self_dev_edit),                                 # ADR-0015 edit step
+        ("marks", "set_call_tool_fn", _dispatch_tray_call_tool),                     # mark-kit M6: self_dev via the gate
+        ("marks", "set_broadcast_fn", _broadcast),                                   # mark-kit M6: marks_changed
         ("self_dev", "set_restart_fn", _self_dev_restart),                           # ADR-0015 SD-2 #555
         ("self_dev", "set_rollback_fn", _self_dev_rollback),                         # #813 manual rollback
         ("self_dev", "set_record_turn_fn", _record_turn),                           # #810 pending-review card

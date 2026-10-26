@@ -690,9 +690,11 @@ class ModelRouter:
             task.cancel()  # no-op when done; covers cancellation of the caller
             await sem.release()
 
-    async def complete(self, prompt: str, task_type: str = "chat") -> str:
+    async def complete(self, prompt: str, task_type: str = "chat", model: str | None = None) -> str:
+        # `model` pins one call to a specific model (mark-kit "Check the marks"
+        # model menu -> self_dev); missing/unreachable falls back like a task model.
         top = self.active_model
-        model_id = self._task_models.get(task_type, top)
+        model_id = model or self._task_models.get(task_type, top)
         # Graceful fallback (issue #349): a per-task model that is missing or
         # unreachable falls back to the active model with a log. The active
         # model itself failing still raises — never a silent cloud fallback

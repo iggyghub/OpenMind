@@ -15,7 +15,16 @@ the mark's `history`.
 
 `repo` defaults to Felix's own checkout. Writes go through the ADR-0005 gate
 like any tool (fs_write: ASK until the user allows it).
+
+marks_fix ("Check the marks", M6) hands every open/reopened mark to self_dev
+as one change request -- clone, edit with the chosen model, test, PR, the
+same pipeline Felix uses on itself, pointed at the marked repo via target_dir.
+self_dev is called through the gate (seam wired by main.py), never directly.
+It runs in the background: marks go `fixing` at once, then `fixed` (with the
+PR) when it merges, or back to `reopened` with the reason. Only for Felix's own
+repo does it then run self_dev_load (pull + restart), after the marks are saved.
 """
+import asyncio
 import base64
 import json
 import logging
@@ -121,6 +130,60 @@ def _decode_png(shot: str) -> bytes:
     return data
 
 
+def _set_status(m: dict, status: str, **extra) -> None:
+    entry = {"status": status, "at": _now(), **{k: str(v) for k, v in extra.items() if v}}
+    m["status"] = status
+    if entry.get("pr"):
+        m["pr"] = entry["pr"]
+    m.setdefault("history", []).append(entry)
+
+
+def fix_request(marks: list[dict], repo: Path) -> str:
+    """One self_dev change_description covering every given mark."""
+    lines = [
+        "Fix these UI marks. Each one is a change request someone made by pointing at the "
+        "running app (mark mode). Find each element in the source by its text and classes "
+        "(locator), make the change, and keep unrelated code as it is.",
+        "",
+    ]
+    for i, m in enumerate(marks, 1):
+        loc = m.get("locator") or {}
+        app = m.get("app") or {}
+        where = " / ".join(str(v) for v in app.values() if v)
+        kind = (m.get("type") or "fix") + (f" {m['kind']}" if m.get("kind") else "")
+        lines.append(f"{i}. [{kind}]{' (' + where + ')' if where else ''} {m.get('note') or ''}".rstrip())
+        lines.append(f"   element: {loc.get('anchor', '')} {loc.get('sel', '')} text={m.get('text', '')!r}".rstrip())
+        lines.append(f"   css path: {m.get('selector', '')}")
+        if m.get("scope") == "all":
+            lines.append(f"   applies to ALL {m.get('matched')} elements matching {m.get('match')}")
+        if m.get("link"):
+            ln = m["link"]
+            lines.append(f"   {ln.get('relation', 'linked to')}: {ln.get('selector', '')} text={ln.get('text', '')!r}")
+        reopened = [h.get("note") for h in m.get("history", []) if h.get("status") == "reopened" and h.get("note")]
+        if reopened:
+            lines.append(f"   reopened after a previous fix: {reopened[-1]}")
+        if m.get("styles"):
+            lines.append("   styles now: " + "; ".join(f"{k}: {v}" for k, v in m["styles"].items()))
+        if m.get("shot_path"):
+            lines.append(f"   screenshot when marked: {repo / m['shot_path']}")
+    return "\n".join(lines)
+
+
+# Module-level seams, wired by cerebral/main.py (_wire_plugin_seams).
+_call_tool_fn = None   # async (name, args) -> ToolResult, through the ADR-0005 gate
+_broadcast_fn = None   # async (event dict) -> None
+
+
+def set_call_tool_fn(fn) -> None:
+    global _call_tool_fn
+    _call_tool_fn = fn
+
+
+def set_broadcast_fn(fn) -> None:
+    global _broadcast_fn
+    _broadcast_fn = fn
+
+
 def _with_abs(repo: Path, m: dict) -> dict:
     out = dict(m)
     if m.get("shot_path"):
@@ -130,6 +193,13 @@ def _with_abs(repo: Path, m: dict) -> dict:
 
 class MarksPlugin:
     name = PLUGIN_NAME
+
+    def __init__(self, call_tool_fn=None, broadcast_fn=None) -> None:
+        self._call_override = call_tool_fn
+        self._broadcast_override = broadcast_fn
+        # ADR-0028 R5: one fix run at a time. Read+set with no await between.
+        self._fixing = False
+        self._task = None  # keep a reference so the background run isn't GC'd
 
     def list_tools(self) -> list[Tool]:
         repo_prop = {"type": "string", "description": "Absolute path of the marked app's git checkout. Omit for Felix's own."}
@@ -186,6 +256,24 @@ class MarksPlugin:
                     "required": ["id", "status"],
                 },
             ),
+            Tool(
+                name="marks_fix",
+                description=(
+                    "Check the marks: hand every open or reopened UI mark to self_dev as one change "
+                    "(clone, edit with the chosen model, test, PR) and track them fixing -> fixed / "
+                    "reopened. Returns at once; the run continues in the background. Felix's own repo "
+                    "is reloaded (restart) only after the marks are updated."
+                ),
+                plugin=PLUGIN_NAME,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "model": {"type": "string", "description": "Model id for the edit. Omit for the self_dev task model."},
+                        "ids": {"type": "array", "items": {"type": "string"}, "description": "Only these marks."},
+                        "repo": repo_prop,
+                    },
+                },
+            ),
         ]
 
     async def call_tool(self, tool_name: str, args: dict) -> ToolResult:
@@ -198,6 +286,8 @@ class MarksPlugin:
                 return self._list(repo, args)
             if tool_name == "marks_update":
                 return self._update(repo, args)
+            if tool_name == "marks_fix":
+                return self._fix(repo, args)
         except ValueError as exc:
             return ToolResult(content=str(exc), is_error=True)
         return ToolResult(content=f"Unknown tool: '{tool_name}'", is_error=True)
@@ -256,6 +346,64 @@ class MarksPlugin:
                 _write(repo, marks)
                 return ToolResult(content=json.dumps(_with_abs(repo, m)))
         return ToolResult(content=f"no mark with id {args.get('id')!r}", is_error=True)
+
+
+    def _fix(self, repo: Path, args: dict) -> ToolResult:
+        call = self._call_override or _call_tool_fn
+        if call is None:
+            return ToolResult(content="marks_fix unavailable: self_dev seam not wired", is_error=True)
+        if self._fixing:
+            return ToolResult(content="A fix run is already going; wait for it to finish.", is_error=True)
+        want = set(args.get("ids") or [])
+        marks = _read(repo)
+        todo = [m for m in marks if m.get("status") in ("open", "reopened") and (not want or m.get("id") in want)]
+        if not todo:
+            return ToolResult(content="No open marks to fix.", is_error=True)
+        self._fixing = True
+        for m in todo:
+            _set_status(m, "fixing")
+        _write(repo, marks)
+        ids = [m["id"] for m in todo]
+        self._task = asyncio.ensure_future(self._fix_run(repo, ids, fix_request(todo, repo), str(args.get("model") or ""), call))
+        return ToolResult(content=json.dumps({"started": True, "marks": len(ids), "model": args.get("model") or ""}))
+
+    async def _fix_run(self, repo: Path, ids: list[str], request: str, model: str, call) -> None:
+        own = repo.resolve() == _REPO_ROOT.resolve()
+        sd_args = {"change_description": request, "no_load": True}
+        if not own:
+            sd_args["target_dir"] = str(repo)
+        if model:
+            sd_args["model"] = model
+        status, extra, merged = "reopened", {}, False
+        try:
+            res = await call("self_dev", sd_args)
+            data = {}
+            if not res.is_error:
+                try:
+                    data = json.loads(res.content)
+                except ValueError:
+                    pass
+            if data.get("merge_decision") == "auto_merge":
+                status, extra, merged = "fixed", {"pr": data.get("pr_url")}, True
+            elif data.get("pr_url"):
+                extra = {"pr": data["pr_url"], "note": "fix PR opened but its tests failed; not merged"}
+            else:
+                extra = {"note": f"fix run failed: {str(res.content)[:300]}"}
+        except Exception as exc:  # never leave marks stuck in `fixing`
+            logger.exception("[marks] fix run crashed")
+            extra = {"note": f"fix run crashed: {exc}"}
+        finally:
+            marks = _read(repo)
+            for m in marks:
+                if m.get("id") in ids and m.get("status") == "fixing":
+                    _set_status(m, status, **extra)
+            _write(repo, marks)
+            self._fixing = False
+        broadcast = self._broadcast_override or _broadcast_fn
+        if broadcast is not None:
+            await broadcast({"type": "marks_changed", "data": {"status": status, "ids": ids, **extra}})
+        if merged and own:
+            await call("self_dev_load", {"pr_url": extra.get("pr") or ""})
 
 
 def create(**kwargs) -> MarksPlugin:
