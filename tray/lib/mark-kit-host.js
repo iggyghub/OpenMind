@@ -105,7 +105,8 @@
       return m.shot_abs ? 'file:///' + encodeURI(m.shot_abs.replace(/\\/g, '/')) : null;
     }
 
-    function where(m) { return m.is_cloud ? 'cloud' : m.is_custom ? 'remote' : 'local'; }
+    // A custom endpoint (Budd) is remote even though the router flags it is_cloud (ADR-0028 R5).
+    function where(m) { return m.is_custom ? 'remote' : m.is_cloud ? 'cloud' : 'local'; }
     var fix = {
       models: function () {
         function out() {

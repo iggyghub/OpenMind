@@ -58,7 +58,7 @@ test('fix: models from models_list with tiers, coding model preferred, run calls
   const sent = [];
   const host = MarkKitHost.create((ev) => { sent.push(ev); return true; });
   host.onEvent({ type: 'models_list', data: { active: 'custom/budd', task_models: { coding: 'claude/sonnet' }, models: [
-    { id: 'custom/budd', label: 'Budd', is_custom: true }, { id: 'claude/sonnet', label: 'Sonnet', is_cloud: true },
+    { id: 'custom/budd', label: 'Budd', is_custom: true, is_cloud: true }, { id: 'claude/sonnet', label: 'Sonnet', is_cloud: true },
     { id: 'ollama/qwen3:8b', label: 'Qwen' }, { id: 'off', label: 'Off', enabled: false }] } });
   await expect(host.fix.models()).resolves.toEqual([
     { id: 'custom/budd', label: 'Budd', where: 'remote' }, { id: 'claude/sonnet', label: 'Sonnet', where: 'cloud' },

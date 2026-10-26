@@ -428,6 +428,7 @@
         list.forEach(function (m) { m.stored = true; ids[m.id] = true; });
         marks = list.concat(marks.filter(function (m) { return !m.stored && !ids[m.id]; }));
         save(marks); refresh(); highlight();
+        if (!n('fixing') && /^Fixing/.test(fixMsg.textContent)) say('');
       }, function () {});
     }
 
