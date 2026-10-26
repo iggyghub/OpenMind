@@ -6938,21 +6938,16 @@
        Dual-mode: window.WsBridge here, module.exports for Node tests. -->
   <script src="../lib/ws-bridge.js"></script>
   <!-- Mark mode (Ctrl+Shift+M) -- tools/mark-kit, the host-agnostic core;
-       Felix is its host. Point at UI elements and leave notes for a cleanup
-       pass; "Copy all" puts them on the clipboard. Dev tooling: reads the
-       page + writes the clipboard, no tool calls. The context hook adds
-       Felix's pane route + active sub-tab(s) to each mark. -->
+       Felix is its host (tray/lib/mark-kit-host.js: pane/sub-tab context,
+       window screenshots over the WS bridge). sendEvent is looked up at call
+       time: it is declared by the main script further down. -->
   <script src="../../tools/mark-kit/mark-kit.js"></script>
+  <script src="../lib/mark-kit-host.js"></script>
   <script>
-    window.MarkKit.init(document, {
-      context: function (el) {
-        var pane = el.closest('[data-route]');
-        var tabs = pane ? Array.prototype.filter.call(pane.querySelectorAll('.tab-strip .is-active'),
-          function (t) { return t.offsetParent !== null; })  // hidden sub-panes keep their own active tab
-          .map(function (t) { return t.textContent.trim(); }) : [];
-        return { route: pane ? pane.getAttribute('data-route') : '', subtab: tabs.join(' > ') };
-      },
+    window.markKitHost = window.MarkKitHost.create(function (ev) {
+      return typeof window.sendEvent === 'function' && window.sendEvent(ev);
     });
+    window.MarkKit.init(document, window.markKitHost);
   </script>
 
   <script>
@@ -7348,6 +7343,7 @@
         ((event.data && event.data.events) || []).forEach(handleEvent);
         return;
       }
+      if (window.markKitHost) window.markKitHost.onEvent(event);
       if (event.type !== 'heartbeat') latestByType.set(event.type, event);
       const next = STATE_MAP[event.type];
       if (next !== undefined) setState(next);

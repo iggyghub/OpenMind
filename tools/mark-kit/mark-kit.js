@@ -14,7 +14,10 @@
 // Host-agnostic: no imports, no knowledge of the app it is loaded into
 // (tests/boundary.test.js enforces this). A host calls
 //   MarkKit.init(document, { context: function (el) { return {...}; } })
-// and the context object is stored on each mark as `app`.
+// and the context object is stored on each mark as `app`. Optional hooks:
+//   capture(rect) -> Promise<png data URL | null>   screenshot of a viewport rect
+// Inputs are blacked out while the host captures, and input values are never
+// recorded (field text is left out of every mark).
 //
 // Dual-mode export: window.MarkKit in a page, module.exports for Node tests.
 
@@ -33,7 +36,21 @@
     return el.classList ? Array.prototype.slice.call(el.classList)
       .filter(function (c) { return c.indexOf('uim-') !== 0 && c.indexOf('is-') !== 0; }) : [];
   }
-  function shortText(el) { return (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80); }
+  // Text the user typed never goes into a mark: fields give '', and a container
+  // drops its fields' text. Static UI text is what locates an element.
+  var FIELDS = 'input,textarea,select,[contenteditable]:not([contenteditable="false"])';
+  function isField(el) {
+    return /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || !!el.isContentEditable;
+  }
+  function shortText(el) {
+    if (isField(el)) return '';
+    var src = el;
+    if (el.querySelector && el.cloneNode && el.querySelector(FIELDS)) {
+      src = el.cloneNode(true);
+      Array.prototype.forEach.call(src.querySelectorAll(FIELDS), function (f) { f.remove(); });
+    }
+    return (src.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  }
   function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
   // Full CSS path, stopping at the first ancestor with an id. Fallback locator.
@@ -151,12 +168,27 @@
         (m.viewport ? '   viewport: ' + m.viewport.w + 'x' + m.viewport.h +
           (m.scroll && (m.scroll.x || m.scroll.y) ? ', scroll ' + m.scroll.x + ',' + m.scroll.y : '') + '\n' : '') +
         (m.errors && m.errors.length ? '   errors: ' + m.errors.join(' | ') + '\n' : '') +
+        (m.shot_path ? '   screenshot: ' + m.shot_path + '\n' : '') +
         '   styles: ' + s;
     }).join('\n\n');
   }
 
   function load() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; } }
-  function save(marks) { try { localStorage.setItem(KEY, JSON.stringify(marks)); } catch (e) {} }
+  // Screenshots stay in memory / the host store, never in localStorage (quota).
+  function save(marks) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(marks.map(function (m) {
+        var c = Object.assign({}, m); delete c.shot; return c;
+      })));
+    } catch (e) {}
+  }
+
+  // Viewport rect around an element's box with some margin, clamped to the window.
+  function shotRect(r, vw, vh, margin) {
+    var x = Math.max(0, Math.floor(r.left - margin)), y = Math.max(0, Math.floor(r.top - margin));
+    var w = Math.min(vw, Math.ceil(r.right + margin)) - x, h = Math.min(vh, Math.ceil(r.bottom + margin)) - y;
+    return w > 0 && h > 0 ? { x: x, y: y, width: w, height: h } : null;
+  }
 
   // Console errors since the last mark. Installed at init, so it also catches
   // errors that happen while mark mode is off.
@@ -203,6 +235,14 @@
       '#uim-bar button,#uim-bar select{font:inherit;padding:2px 8px;border-radius:6px;border:1px solid #444;background:#2a2a33;color:#ddd;cursor:pointer}' +
       '#uim-bar .uim-chips{display:inline-flex;gap:2px}' +
       '#uim-bar .uim-chips button.on{background:var(--accent,#7c5cfc);border-color:var(--accent,#7c5cfc);color:#fff}' +
+      '.uim-mask #uim-bar{visibility:hidden!important}' +
+      '.uim-mask .uim-hover,.uim-mask .uim-like,.uim-mask .uim-link{outline:none!important}' +
+      '.uim-mask input,.uim-mask textarea,.uim-mask select,.uim-mask [contenteditable]:not([contenteditable="false"])' +
+      '{color:transparent!important;-webkit-text-fill-color:transparent!important;background:#000!important;caret-color:transparent!important}' +
+      '#uim-thumb{height:36px;border:1px solid #444;border-radius:4px;cursor:zoom-in}' +
+      '#uim-sketch{position:fixed;inset:5vh 5vw;z-index:2147483647;background:#000c;display:flex;flex-direction:column;gap:6px;' +
+      'align-items:center;justify-content:center;padding:10px;border-radius:10px}' +
+      '#uim-sketch canvas{max-width:100%;max-height:calc(100% - 40px);cursor:crosshair;background:#fff}' +
       '#uim-note{flex:1;min-width:240px;font:inherit;padding:2px 6px;border-radius:6px;border:1px solid #555;background:#111;color:#eee}';
     doc.head.appendChild(css);
     var bar = doc.createElement('div');
@@ -216,13 +256,18 @@
       chips('scope', ['one', 'all'], ['This one', 'All like this <b id="uim-count"></b>']) +
       '<select id="uim-kind" hidden title="What to add">' + options(ADD_KINDS) + '</select>' +
       '<select id="uim-rel" hidden title="How the two are linked">' + options(RELATIONS) + '</select>' +
-      '<span id="uim-link-hint" hidden>then click the other element</span></div>' +
+      '<span id="uim-link-hint" hidden>then click the other element</span>' +
+      '<img id="uim-thumb" hidden alt="screenshot" title="Screenshot saved with this mark">' +
+      '<button id="uim-sketch-btn" hidden title="Draw boxes on the screenshot to show where and roughly how">Sketch</button></div>' +
+      '<div id="uim-sketch" hidden><canvas></canvas><div class="uim-row">' +
+      '<span>Drag to draw boxes</span><button id="uim-sk-undo">Undo</button><button id="uim-sk-done">Done</button></div></div>' +
       '<div class="uim-row" id="uim-note-row" hidden><input id="uim-note" placeholder="What should change? Enter saves, Esc cancels"></div>';
     doc.body.appendChild(bar);
     function $(id) { return bar.querySelector('#' + id); }
     var count = $('uim-n'), input = $('uim-note'), editRow = $('uim-edit'), noteRow = $('uim-note-row');
     var kindSel = $('uim-kind'), relSel = $('uim-rel'), linkHint = $('uim-link-hint');
-    var pending = null, linkTo = null, likes = [];
+    var pending = null, linkTo = null, likes = [], shot = null, sketch = [], shotSeq = 0;
+    var thumb = $('uim-thumb'), sketchBtn = $('uim-sketch-btn'), sketchBox = $('uim-sketch');
     var choice = { type: 'fix', scope: 'one' };
     function refresh() { count.textContent = marks.length; }
     refresh();
@@ -271,6 +316,7 @@
         b.classList.toggle('on', choice[b.parentNode.getAttribute('data-group')] === b.getAttribute('data-v'));
       });
       kindSel.hidden = choice.type !== 'add';
+      sketchBtn.hidden = choice.type !== 'add' || !shot;
       relSel.hidden = linkHint.hidden = choice.type !== 'link';
       linkHint.textContent = linkTo ? 'linked to "' + shortText(linkTo).slice(0, 30) + '"' : 'then click the other element';
       likes.forEach(function (el) { el.classList.remove('uim-like'); });
@@ -292,13 +338,79 @@
     function setPending(el) {
       if (pending) pending.classList.remove('uim-marked');
       if (linkTo) linkTo.classList.remove('uim-link');
-      pending = el; linkTo = null;
+      pending = el; linkTo = null; shot = null; sketch = []; shotSeq++;
       choice = { type: 'fix', scope: 'one' };
       editRow.hidden = noteRow.hidden = !el;
+      thumb.hidden = true; sketchBox.hidden = true;
       input.value = '';
-      if (el) { el.classList.add('uim-marked'); input.focus(); }
+      if (el) { el.classList.add('uim-marked'); input.focus(); takeShot(el); }
       showChoice();
     }
+
+    // Ask the host for a screenshot of the element (plus margin) as it looks now,
+    // with inputs blacked out and our own bar hidden. No hook = no image.
+    function takeShot(el) {
+      if (!opts.capture) return;
+      var seq = shotSeq;
+      var rect = shotRect(el.getBoundingClientRect(), win.innerWidth, win.innerHeight, 40);
+      if (!rect) return;
+      var root = doc.documentElement, done = false;
+      function unmask() { if (!done) { done = true; root.classList.remove('uim-mask'); } }
+      root.classList.add('uim-mask');
+      setTimeout(unmask, 3000);  // a host that never answers must not leave the page masked
+      // A few frames so the mask is painted before the host grabs pixels.
+      // ponytail: timer, not requestAnimationFrame -- rAF never fires in a background tab.
+      setTimeout(function () {
+        Promise.resolve(opts.capture(rect)).then(function (url) {
+          unmask();
+          if (seq !== shotSeq || !url) return;  // a newer pick superseded this one
+          shot = url; thumb.src = url; thumb.hidden = false; showChoice();
+        }, unmask);
+      }, 80);
+    }
+
+    // Add marks: draw boxes on the screenshot. The boxes are burned into the image.
+    var canvas = sketchBox.querySelector('canvas'), ctx2d = canvas.getContext && canvas.getContext('2d'), base = null;
+    function redraw() {
+      ctx2d.drawImage(base, 0, 0);
+      ctx2d.strokeStyle = '#ff3b6b'; ctx2d.lineWidth = 3;
+      sketch.forEach(function (b) { ctx2d.strokeRect(b.x, b.y, b.w, b.h); });
+    }
+    function openSketch() {
+      if (!shot || !ctx2d) return;
+      base = new Image();
+      base.onload = function () {
+        canvas.width = base.naturalWidth; canvas.height = base.naturalHeight;
+        sketch = []; redraw(); sketchBox.hidden = false;
+      };
+      base.src = shot;
+    }
+    function canvasPt(e) {
+      var r = canvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left) * canvas.width / r.width, y: (e.clientY - r.top) * canvas.height / r.height };
+    }
+    canvas.addEventListener('mousedown', function (e) {
+      e.preventDefault();
+      var a = canvasPt(e), box = { x: a.x, y: a.y, w: 0, h: 0 };
+      sketch.push(box);
+      function move(ev) {
+        var b = canvasPt(ev);
+        box.x = Math.min(a.x, b.x); box.y = Math.min(a.y, b.y);
+        box.w = Math.abs(b.x - a.x); box.h = Math.abs(b.y - a.y); redraw();
+      }
+      function up() {
+        doc.removeEventListener('mousemove', move, true); doc.removeEventListener('mouseup', up, true);
+        if (box.w < 4 || box.h < 4) { sketch.pop(); redraw(); }
+      }
+      doc.addEventListener('mousemove', move, true); doc.addEventListener('mouseup', up, true);
+    });
+    sketchBtn.addEventListener('click', openSketch);
+    thumb.addEventListener('click', function () { if (choice.type === 'add') openSketch(); });
+    $('uim-sk-undo').addEventListener('click', function () { sketch.pop(); redraw(); });
+    $('uim-sk-done').addEventListener('click', function () {
+      if (sketch.length) { shot = canvas.toDataURL('image/png'); thumb.src = shot; }
+      sketchBox.hidden = true; input.focus();
+    });
     // Saves a typed-but-unsubmitted mark too, so Done / Copy all / clicking the
     // next element never silently drops it (the first live mark was lost that way).
     // A plain Fix needs a note; any other chosen type says enough on its own.
@@ -315,6 +427,10 @@
       };
       if (choice.scope === 'all') { extra.scope = 'all'; extra.match = likeSelector(pending); extra.matched = likes.length; }
       if (choice.type === 'add') extra.kind = kindSel.value;
+      if (shot) extra.shot = shot;
+      if (sketch.length) extra.sketch = sketch.map(function (b) {
+        return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h) };
+      });
       if (choice.type === 'link' && linkTo) extra.link = Object.assign({ relation: relSel.value }, pointer(linkTo));
       if (opts.context) { try { extra.app = opts.context(pending) || {}; } catch (e) { extra.app = {}; } }
       marks.push(describe(pending, win.getComputedStyle(pending), note, extra));
@@ -390,7 +506,7 @@
 
   var _exports = {
     init: init, cssPath: cssPath, locate: locate, resolve: resolve, describe: describe, format: format,
-    likeSelector: likeSelector, TYPES: TYPES,
+    likeSelector: likeSelector, shotRect: shotRect, TYPES: TYPES,
   };
 
   if (typeof module === 'object' && module && module.exports) {

@@ -253,6 +253,16 @@ function sendToCerebral(event) {
 
 function handleCerebralEvent(event) {
   switch (event.type) {
+    case 'mark_capture': {
+      // mark-kit screenshot (tray/lib/mark-kit-host.js): pixels of the Main
+      // window's own webContents only, answered through Cerebral's relay.
+      const d = event.data || {};
+      if (!mainWindow || mainWindow.isDestroyed() || !d.id) break;
+      require('./lib/mark-capture').captureMark(mainWindow.webContents, d.rect)
+        .then((png) => sendToCerebral({ type: 'mark_capture_result', data: { id: d.id, png } }));
+      break;
+    }
+
     case 'snapshot':  // connect-time bundle of state events (main.py _snapshot_events)
       ((event.data && event.data.events) || []).forEach(handleCerebralEvent);
       break;

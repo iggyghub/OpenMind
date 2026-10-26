@@ -103,6 +103,11 @@ const DUAL_MODE_LIBS = [
     check: (mod) => expect(typeof mod.init).toBe('function'),
   },
   {
+    file: 'mark-kit-host.js',
+    global: 'MarkKitHost',
+    check: (mod) => expect(typeof mod.create).toBe('function'),
+  },
+  {
     file: 'tile-dialog.js',
     global: 'TileDialog',
     check: (mod) => expect(typeof mod.enhance).toBe('function'),
